@@ -1,0 +1,55 @@
+[project]
+name = "myofit-pro"
+version = "0.1.0"
+description = "EMGTrainer / MyoFit Pro — evaluación sEMG con sensores MYOblue"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # ── GUI ──────────────────────────────────────────────
+    "PySide6>=6.7",
+    "PySide6-Fluent-Widgets>=1.7",
+    "pyqtgraph>=0.13",
+
+    # ── Hardware e ingesta de datos ─────────────────────
+    "pyserial>=3.5",
+    "bleak>=0.22",
+    "pylsl>=1.16",
+
+    # ── DSP ──────────────────────────────────────────────
+    "numpy>=1.26",
+    "scipy>=1.13",
+
+    # ── ML y datos ───────────────────────────────────────
+    "pandas>=2.2",
+    "scikit-learn>=1.5",
+    "xgboost>=2.1",
+    "lightgbm>=4.5",
+
+    # ── Base de datos local ─────────────────────────────
+    "sqlalchemy>=2.0",
+    "duckdb>=1.0",
+
+    # ── Seguridad (equivalente a BCrypt.Net-Next) ──────
+    "bcrypt>=4.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-qt>=4.4",
+    "nuitka>=2.4",
+    "pyinstaller>=6.10",
+]
+
+[project.scripts]
+myofit-pro = "myofit_pro.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/myofit_pro"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
