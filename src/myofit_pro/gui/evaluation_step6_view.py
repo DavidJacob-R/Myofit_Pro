@@ -19,12 +19,15 @@ from myofit_pro.gui.wizard_step import WizardStep
 from myofit_pro.gui.theme import (
     ACCENT_AMBER,
     ACCENT_BLUE,
+    ACCENT_LIME,
     ACCENT_TEAL,
     ACCENT_VIOLET,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
     Card,
     EmptyState,
+    IconBadge,
+    ListRow,
     MeterBar,
     Pill,
     ScoreRing,
@@ -76,6 +79,11 @@ class EvaluationStep6View(WizardStep):
         reading = result.readings[0] if result and result.readings else None
 
         self._layout.addWidget(self._build_hero(session, client, muscle, result))
+
+        # El ranking es el resultado de la batería y va antes que nada:
+        # es lo que el entrenador se lleva para armar la rutina.
+        if len(session.results) > 1:
+            self._layout.addWidget(self._build_ranking_card(session.results))
 
         if reading is not None:
             self._layout.addWidget(self._build_balance_card(reading))
@@ -139,6 +147,76 @@ class EvaluationStep6View(WizardStep):
         )
 
         card.body.addLayout(row)
+        return card
+
+    def _build_ranking_card(self, results) -> Card:
+        """
+        Ejercicios ordenados por activación, promediando las mediciones
+        repetidas del mismo ejercicio.
+
+        Se destacan los tres primeros y no solo el primero. Medido por
+        simulación (`ml/within_subject.py`), con una repetibilidad del
+        10% el ejercicio que queda primero es de verdad el mejor solo el
+        66% de las veces, pero el mejor real está entre los tres
+        primeros el 95% de las veces. Recomendar tres es una afirmación
+        que la medición sostiene; recomendar uno no.
+        """
+        by_exercise: dict[str, list[float]] = {}
+        for result in results:
+            exercise = (
+                self.state.exercise_repo.get(result.exercise_id)
+                if result.exercise_id
+                else None
+            )
+            name = exercise.name if exercise else "Sin ejercicio registrado"
+            by_exercise.setdefault(name, []).append(result.avg_activation_pct)
+
+        ranking = sorted(
+            by_exercise.items(), key=lambda item: sum(item[1]) / len(item[1]), reverse=True
+        )
+
+        # La etiqueta de recomendado solo tiene sentido si hubo de dónde
+        # escoger. Con tres ejercicios medidos, marcar los tres como
+        # recomendados no descarta nada y no informa nada.
+        hay_donde_escoger = len(ranking) > 3
+
+        card = Card()
+        card.add_title(
+            "Ranking de ejercicios",
+            (
+                "Para este cliente y este músculo. Los tres primeros son los recomendables."
+                if hay_donde_escoger
+                else f"Para este cliente y este músculo. Se midieron {len(ranking)}, "
+                     "con más ejercicios en el catálogo el orden distingue mejor."
+            ),
+        )
+
+        for position, (name, values) in enumerate(ranking, start=1):
+            mean = sum(values) / len(values)
+            recomendado = hay_donde_escoger and position <= 3
+            accent = ACCENT_LIME if position <= 3 else TEXT_SECONDARY
+
+            subtitle = (
+                f"{len(values)} medición" if len(values) == 1
+                else f"{len(values)} mediciones"
+            )
+            if len(values) > 1:
+                spread = max(values) - min(values)
+                subtitle += f"   ·   rango de {spread:.0f} puntos entre mediciones"
+
+            card.body.addWidget(
+                ListRow(
+                    title=name,
+                    subtitle=subtitle,
+                    value=f"{mean:.0f}%",
+                    value_caption="activación",
+                    value_color=accent,
+                    leading=IconBadge(str(position), accent, size=36),
+                    pill=("Recomendado", ACCENT_LIME) if recomendado else None,
+                    clickable=False,
+                )
+            )
+
         return card
 
     def _build_balance_card(self, reading) -> Card:

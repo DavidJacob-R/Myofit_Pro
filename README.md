@@ -106,9 +106,16 @@ ejercicios, junto con la guía de colocación de electrodos de cada músculo. El
 script es idempotente, es decir que se puede correr varias veces sin duplicar
 información porque revisa por nombre antes de insertar.
 
-El catálogo es intencionalmente corto: solo incluye músculos donde tiene
-sentido colocar dos sensores en dos porciones distintas, con suficiente masa
-muscular para separar los electrodos 2 o 3 centímetros.
+El catálogo es intencionalmente corto en cuanto a músculos: solo incluye
+aquellos donde tiene sentido colocar dos sensores en dos porciones distintas,
+con suficiente masa muscular para separar los electrodos 2 o 3 centímetros.
+
+En cuanto a ejercicios, en cambio, se queda corto para lo que hace falta.
+Trae 25 ejercicios repartidos en 9 músculos, o sea 2 o 3 por músculo, y la
+batería del paso 5 sirve para ordenar ejercicios entre sí: con tres, el orden
+no descarta gran cosa. Para que el tamizaje valga la pena conviene subirlo a
+5 o 6 por músculo, que es trabajo de catálogo y se hace editando
+`seed_data.py`, sin tocar código.
 
 ### 4.2 Ejecutar la aplicación
 
@@ -258,10 +265,14 @@ servir como variable de entrada.
    estado para que se vea cuál falta cuando el botón está bloqueado.
 4. **Calibración MVC**: se pide la contracción máxima del cliente y se guarda
    como referencia del 100% para ese músculo.
-5. **Evaluación en vivo**: se graba la serie de repeticiones y se calcula la
-   activación de cada canal respecto al MVC.
-6. **Reporte**: resultado de la evaluación recién terminada, con el score
-   general y el balance entre canales.
+5. **Batería de ejercicios**: se graba una serie por cada ejercicio del
+   músculo, todas contra la MISMA calibración del paso 4, y cada una queda
+   etiquetada con el ejercicio que se hizo. Se puede medir el mismo ejercicio
+   varias veces: el promedio queda más confiable y la pantalla calcula el
+   coeficiente de variación de la medición, que es el número con el que se
+   decide si la diferencia entre dos ejercicios es real o es ruido.
+6. **Reporte**: ranking de ejercicios ordenado por activación para ese
+   cliente, más el score general y el balance entre canales.
 
 Los dos botones de navegación viven juntos en un pie único, el mismo en todos
 los pasos: volver a la izquierda y continuar ocupando el resto del ancho.
@@ -652,7 +663,7 @@ se mostrarían con el tema claro.
 uv run pytest tests/ -v
 ```
 
-Actualmente hay **140 pruebas** que cubren las partes donde un error sería
+Actualmente hay **155 pruebas** que cubren las partes donde un error sería
 difícil de detectar a simple vista:
 
 - **Protocolo binario** (`test_protocol.py`): paquetes válidos, paquetes
@@ -686,6 +697,12 @@ difícil de detectar a simple vista:
   del mismo cliente se parezcan entre sí. También comprueba que el banco
   detecte la fuga por cliente: si los modelos de árboles no se vieran mucho
   mejor con la partición al azar, el banco no estaría midiendo lo que dice.
+- **Batería de ejercicios** (`test_battery.py`): el coeficiente de variación
+  que la app le muestra al entrenador, que es con el que decide si dos
+  ejercicios de verdad se diferencian. Incluye que use la desviación muestral
+  y no la poblacional, porque con tres o cuatro mediciones dividir entre n en
+  vez de entre n-1 subestima la dispersión y haría ver la medición más
+  confiable de lo que es.
 - **Diseño intra-sujeto** (`test_within_subject.py`): que la simulación se
   comporte como un experimento de medición repetida (más ruido empeora, más
   mediciones mejoran, el error baja con la raíz del número de mediciones), y

@@ -63,7 +63,7 @@ _STEP_TITLES = [
     "Colocación de electrodos",
     "Verificación de conexión",
     "Calibración MVC",
-    "Evaluación en vivo",
+    "Batería de ejercicios",
     "Reporte",
 ]
 
@@ -76,8 +76,8 @@ _STEP_CAPTIONS = [
     "Coloca los dos sensores como indica la guía",
     "Confirma que ambos sensores están enviando buena señal",
     "Registra la contracción máxima que sirve de referencia",
-    "Mide las repeticiones con el cliente trabajando",
-    "Resultado de la evaluación, ya guardado",
+    "Mide cada ejercicio y compara cuál activa más a este cliente",
+    "Ranking de ejercicios y resultado, ya guardado",
 ]
 
 
