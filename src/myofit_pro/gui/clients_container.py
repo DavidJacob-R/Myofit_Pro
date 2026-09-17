@@ -18,6 +18,7 @@ from myofit_pro.gui.clients_view import ClientsView
 class ClientsContainer(QWidget):
     start_evaluation_requested = Signal(object)   # Client
     view_report_requested = Signal(int)           # session_id
+    data_changed = Signal()                       # se borró una evaluación
 
     def __init__(self, state: AppState, parent: QWidget | None = None):
         super().__init__(parent)
@@ -38,8 +39,21 @@ class ClientsContainer(QWidget):
         self.profile_view.back_requested.connect(self._show_list)
         self.profile_view.start_evaluation_requested.connect(self.start_evaluation_requested.emit)
         self.profile_view.view_report_requested.connect(self.view_report_requested.emit)
+        self.profile_view.edit_requested.connect(self._edit_client)
+        # Borrar una evaluación desde el perfil cambia números que otras
+        # secciones ya tienen dibujados (vista general, historial).
+        self.profile_view.data_changed.connect(self.data_changed.emit)
 
         self.stack.setCurrentWidget(self.list_view)
+
+    def _edit_client(self, client) -> None:
+        """
+        El formulario de edición vive en la lista, que es quien lo abre
+        también desde su menú contextual. El perfil solo pide que se
+        abra y se recarga si algo cambió.
+        """
+        if self.list_view.edit_client(client):
+            self.profile_view.reload()
 
     def _show_profile(self, client) -> None:
         self.profile_view.load_client(client)
@@ -52,4 +66,8 @@ class ClientsContainer(QWidget):
     def show_list(self) -> None:
         """Método público para que MainWindow regrese aquí al navegar desde el sidebar."""
         self._show_list()
+
+    def show_profile(self, client) -> None:
+        """Abre el perfil de un cliente desde otra sección (vista general)."""
+        self._show_profile(client)
         

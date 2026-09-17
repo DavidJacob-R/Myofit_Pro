@@ -4,7 +4,8 @@ versión C#.
 
 El historial ya NO es una tabla: cada evaluación es una fila-tarjeta
 (`ListRow`) con su estado y su score a color, clickeable para abrir el
-reporte. El encabezado es un "hero" con avatar, objetivo y el anillo
+reporte y con su propio botón para eliminarla. El encabezado es un
+"hero" con avatar, objetivo, los datos físicos del cliente y el anillo
 de score de la última evaluación.
 """
 
@@ -16,30 +17,37 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 from qfluentwidgets import FluentIcon as FIF
-from qfluentwidgets import PrimaryPushButton, PushButton
+from qfluentwidgets import PrimaryPushButton, PushButton, ToolButton
 
 from myofit_pro.database.models import EvaluationStatus
 from myofit_pro.gui.app_state import AppState
+from myofit_pro.gui.clients_view import bmi_reading
 from myofit_pro.gui.theme import (
     ACCENT_AMBER,
     ACCENT_RED,
     ACCENT_TEAL,
     ACCENT_VIOLET,
+    BG_ELEVATED,
+    BORDER,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
     Avatar,
+    BackButton,
     Card,
+    DataChip,
     EmptyState,
     IconBadge,
     ListRow,
     Pill,
     ScoreRing,
     StatCard,
+    clear_layout,
     goal_color,
     score_color,
 )
@@ -49,6 +57,8 @@ class ClientProfileView(QWidget):
     back_requested = Signal()
     start_evaluation_requested = Signal(object)   # Client
     view_report_requested = Signal(int)           # session_id
+    edit_requested = Signal(object)               # Client
+    data_changed = Signal()                       # se borró algo, refrescar el resto
 
     def __init__(self, state: AppState, parent: QWidget | None = None):
         super().__init__(parent)
@@ -76,10 +86,12 @@ class ClientProfileView(QWidget):
         layout.setSpacing(18)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        back_btn = PushButton("←   Volver a clientes")
+        back_row = QHBoxLayout()
+        back_btn = BackButton("Mis clientes")
         back_btn.clicked.connect(self.back_requested.emit)
-        back_btn.setMaximumWidth(190)
-        layout.addWidget(back_btn)
+        back_row.addWidget(back_btn)
+        back_row.addStretch(1)
+        layout.addLayout(back_row)
 
         layout.addWidget(self._build_hero())
         layout.addLayout(self._build_stats_row())
@@ -99,7 +111,7 @@ class ClientProfileView(QWidget):
         row.addLayout(self._avatar_host)
 
         info_col = QVBoxLayout()
-        info_col.setSpacing(8)
+        info_col.setSpacing(10)
 
         self.name_label = QLabel("—")
         self.name_label.setStyleSheet(
@@ -113,6 +125,12 @@ class ClientProfileView(QWidget):
         self._pill_row.addStretch(1)
         info_col.addLayout(self._pill_row)
 
+        # Datos físicos: lo que el generador de rutinas consume.
+        self._chips_row = QHBoxLayout()
+        self._chips_row.setSpacing(8)
+        self._chips_row.addStretch(1)
+        info_col.addLayout(self._chips_row)
+
         self.notes_label = QLabel("")
         self.notes_label.setWordWrap(True)
         self.notes_label.setStyleSheet(
@@ -122,10 +140,20 @@ class ClientProfileView(QWidget):
 
         info_col.addStretch(1)
 
+        actions = QHBoxLayout()
+        actions.setSpacing(9)
+
         new_eval_btn = PrimaryPushButton("＋   Nueva evaluación")
         new_eval_btn.clicked.connect(self._on_new_evaluation_clicked)
-        new_eval_btn.setMaximumWidth(230)
-        info_col.addWidget(new_eval_btn)
+        actions.addWidget(new_eval_btn)
+
+        edit_btn = PushButton("Editar ficha")
+        edit_btn.setIcon(FIF.EDIT)
+        edit_btn.clicked.connect(self._on_edit_clicked)
+        actions.addWidget(edit_btn)
+
+        actions.addStretch(1)
+        info_col.addLayout(actions)
 
         row.addLayout(info_col, stretch=1)
 
@@ -148,14 +176,17 @@ class ClientProfileView(QWidget):
 
     def _build_history_card(self) -> Card:
         card = Card()
-        card.add_title("Historial de evaluaciones", "Clic en una para abrir su reporte")
+        card.add_title(
+            "Historial de evaluaciones",
+            "Clic para abrir el reporte  ·  la papelera elimina la evaluación",
+        )
 
         self.history_list = QVBoxLayout()
         self.history_list.setSpacing(8)
         card.body.addLayout(self.history_list)
 
         self.history_empty = EmptyState(
-            "📊", "Este cliente todavía no tiene evaluaciones registradas."
+            "", "Este cliente todavía no tiene evaluaciones registradas."
         )
         card.body.addWidget(self.history_empty)
         return card
@@ -168,7 +199,7 @@ class ClientProfileView(QWidget):
         self.mvc_list.setSpacing(8)
         card.body.addLayout(self.mvc_list)
 
-        self.mvc_empty = EmptyState("⚡", "Sin calibraciones registradas todavía.")
+        self.mvc_empty = EmptyState("", "Sin calibraciones registradas todavía.")
         card.body.addWidget(self.mvc_empty)
         return card
 
@@ -179,12 +210,16 @@ class ClientProfileView(QWidget):
         self.name_label.setText(client.full_name)
         self.notes_label.setText(client.notes or "Sin notas.")
 
-        self._clear_layout(self._avatar_host)
+        clear_layout(self._avatar_host)
         self._avatar_host.addWidget(Avatar(client.full_name, size=72))
 
-        self._clear_layout(self._pill_row)
+        clear_layout(self._pill_row)
         self._pill_row.addWidget(Pill(client.goal, goal_color(client.goal)))
+        if not client.profile_is_complete:
+            self._pill_row.addWidget(Pill("Ficha incompleta", ACCENT_AMBER))
         self._pill_row.addStretch(1)
+
+        self._refresh_body_chips(client)
 
         sessions = self.state.evaluation_repo.list_for_client(client.id)
         self._sessions = sessions
@@ -192,6 +227,31 @@ class ClientProfileView(QWidget):
         self._refresh_stats(sessions)
         self._refresh_history(sessions)
         self._refresh_mvc(sessions)
+
+    def reload(self) -> None:
+        """Vuelve a leer el cliente de la base y redibuja todo."""
+        if self._client is None:
+            return
+        fresh = self.state.client_repo.get(self._client.id)
+        if fresh is not None:
+            self.load_client(fresh)
+
+    def _refresh_body_chips(self, client) -> None:
+        clear_layout(self._chips_row)
+
+        bmi = client.bmi
+        bmi_text, bmi_color = bmi_reading(bmi)
+
+        chips = [
+            (client.sex or "—", "SEXO", TEXT_PRIMARY),
+            (f"{client.age_years} años" if client.age_years else "—", "EDAD", TEXT_PRIMARY),
+            (f"{client.height_cm:.0f} cm" if client.height_cm else "—", "ESTATURA", TEXT_PRIMARY),
+            (f"{client.weight_kg:.1f} kg" if client.weight_kg else "—", "PESO", TEXT_PRIMARY),
+            (f"{bmi:.1f}" if bmi else "—", f"IMC · {bmi_text.upper()}", bmi_color),
+        ]
+        for value, caption, color in chips:
+            self._chips_row.addWidget(DataChip(value, caption, color))
+        self._chips_row.addStretch(1)
 
     def _refresh_stats(self, sessions) -> None:
         self.evals_card.set_value(str(len(sessions)))
@@ -208,7 +268,7 @@ class ClientProfileView(QWidget):
         self.score_ring.set_value(scored[0].overall_score if scored else None)
 
     def _refresh_history(self, sessions) -> None:
-        self._clear_layout(self.history_list)
+        clear_layout(self.history_list)
         self.history_empty.setVisible(len(sessions) == 0)
 
         for session in sessions:
@@ -237,10 +297,43 @@ class ClientProfileView(QWidget):
                 row.clicked.connect(
                     lambda sid=session.id: self.view_report_requested.emit(sid)
                 )
+
+            row.add_trailing(self._delete_button(session))
             self.history_list.addWidget(row)
 
+    def _delete_button(self, session) -> ToolButton:
+        button = ToolButton(FIF.DELETE)
+        button.setFixedSize(32, 32)
+        button.setToolTip("Eliminar esta evaluación")
+        button.setStyleSheet(
+            f"ToolButton {{ background-color: {BG_ELEVATED}; border: 1px solid {BORDER}; "
+            f"border-radius: 9px; }}"
+            f"ToolButton:hover {{ background-color: {ACCENT_RED}; border-color: {ACCENT_RED}; }}"
+        )
+        button.clicked.connect(lambda: self._on_delete_session(session))
+        return button
+
+    def _on_delete_session(self, session) -> None:
+        muscle = self.state.muscle_repo.get(session.muscle_id)
+        confirm = QMessageBox.question(
+            self,
+            "Eliminar evaluación",
+            f"¿Eliminar la evaluación de {muscle.name if muscle else 'este músculo'} "
+            f"del {session.started_at.strftime('%d/%m/%Y')}?\n\n"
+            "Se borran también sus resultados y la señal EMG grabada. "
+            "No se puede deshacer.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        self.state.delete_evaluation(session.id)
+        self.reload()
+        self.data_changed.emit()
+
     def _refresh_mvc(self, sessions) -> None:
-        self._clear_layout(self.mvc_list)
+        clear_layout(self.mvc_list)
 
         seen_muscles: set[int] = set()
         rows = 0
@@ -297,16 +390,10 @@ class ClientProfileView(QWidget):
             return f"Hace {weeks} sem"
         return f"Hace {days // 30} mes"
 
-    @staticmethod
-    def _clear_layout(layout) -> None:
-        while layout.count():
-            item = layout.takeAt(0)
-            if item is None:
-                continue
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
     def _on_new_evaluation_clicked(self) -> None:
         if self._client is not None:
             self.start_evaluation_requested.emit(self._client)
+
+    def _on_edit_clicked(self) -> None:
+        if self._client is not None:
+            self.edit_requested.emit(self._client)

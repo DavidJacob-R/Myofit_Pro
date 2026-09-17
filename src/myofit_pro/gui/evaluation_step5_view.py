@@ -18,6 +18,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
+from qfluentwidgets import FluentIcon as FIF
 from qfluentwidgets import (
     BodyLabel,
     PrimaryPushButton,
@@ -26,15 +27,17 @@ from qfluentwidgets import (
 )
 
 from myofit_pro.gui.app_state import AppState
+from myofit_pro.gui.wizard_step import WizardStep
 from myofit_pro.gui.theme import ACCENT_BLUE, ACCENT_TEAL, Card
 
 _WAVE_WINDOW_SEC = 8.0
 
 
-class EvaluationStep5View(QWidget):
+class EvaluationStep5View(WizardStep):
     """Evaluación en vivo — emite `evaluation_finished` al terminar la serie."""
 
     evaluation_finished = Signal()
+    CONTINUE_LABEL = "Terminar y ver reporte  →"
 
     def __init__(self, state: AppState, parent: QWidget | None = None):
         super().__init__(parent)
@@ -109,13 +112,12 @@ class EvaluationStep5View(QWidget):
         layout.addLayout(activation_row)
 
         btn_row = QHBoxLayout()
-        self.start_btn = PrimaryPushButton("●  Iniciar serie")
+        btn_row.setSpacing(10)
+        self.start_btn = PrimaryPushButton("Iniciar serie")
+        self.start_btn.setIcon(FIF.PLAY_SOLID)
         self.start_btn.clicked.connect(self._on_start_clicked)
-        self.finish_btn = PrimaryPushButton("Terminar y ver reporte →")
-        self.finish_btn.setEnabled(False)
-        self.finish_btn.clicked.connect(self._on_finish_clicked)
         btn_row.addWidget(self.start_btn)
-        btn_row.addWidget(self.finish_btn)
+        btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
     # ── Control ──────────────────────────────────────────────────────
@@ -134,9 +136,19 @@ class EvaluationStep5View(QWidget):
         self._session_start_time = _time.monotonic()
         self.sensors.reset_counters()
         self.start_btn.setEnabled(False)
-        self.finish_btn.setEnabled(True)
+        self.continue_state_changed.emit()
 
-    def _on_finish_clicked(self) -> None:
+    def can_continue(self) -> bool:
+        return self._running or bool(self._activation_history_a)
+
+    def blocked_reason(self) -> str:
+        return "Presiona Iniciar serie y graba al menos una repetición."
+
+    def on_continue(self) -> bool:
+        self._finish()
+        return True
+
+    def _finish(self) -> None:
         import time as _time
         self._running = False
         duration_sec = _time.monotonic() - self._session_start_time

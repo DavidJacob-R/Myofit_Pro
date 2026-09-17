@@ -10,7 +10,7 @@ un desbalance A/B es justo lo que el entrenador busca de un vistazo.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import FluentIcon as FIF
 
@@ -23,6 +23,7 @@ from myofit_pro.gui.theme import (
     TEXT_PRIMARY,
     TEXT_SECONDARY,
     Avatar,
+    BackButton,
     Card,
     EmptyState,
     MeterBar,
@@ -30,12 +31,15 @@ from myofit_pro.gui.theme import (
     Pill,
     ScoreRing,
     StatCard,
+    clear_layout,
     format_date_es,
     goal_color,
 )
 
 
 class ReportView(QWidget):
+    back_requested = Signal()
+
     def __init__(self, state, parent: QWidget | None = None):
         super().__init__(parent)
         self.state = state
@@ -46,13 +50,22 @@ class ReportView(QWidget):
         self._show_empty_state()
 
     def _clear(self) -> None:
-        while self._layout.count():
-            item = self._layout.takeAt(0)
-            if item is None:
-                continue
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+        clear_layout(self._layout)
+
+    def _add_back_row(self) -> None:
+        """
+        Botón de volver arriba del contenido.
+
+        El reporte se abre desde tres lugares distintos, así que quien
+        decide a dónde regresa es MainWindow, que es el único que sabe
+        de dónde se llegó.
+        """
+        row = QHBoxLayout()
+        back_btn = BackButton("Volver")
+        back_btn.clicked.connect(self.back_requested.emit)
+        row.addWidget(back_btn)
+        row.addStretch(1)
+        self._layout.addLayout(row)
 
     def _show_empty_state(self) -> None:
         self._clear()
@@ -68,6 +81,7 @@ class ReportView(QWidget):
     def load_session(self, session_id: int) -> None:
         session = self.state.evaluation_repo.get_with_results(session_id)
         self._clear()
+        self._add_back_row()
 
         if session is None:
             self._layout.addWidget(PageHeader("Reporte muscular"))

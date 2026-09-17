@@ -15,17 +15,19 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QScrollArea, QVBoxLayout, QWidget
-from qfluentwidgets import BodyLabel, ComboBox, PrimaryPushButton
+from qfluentwidgets import BodyLabel, ComboBox
 from qfluentwidgets import FluentIcon as FIF
 
 from myofit_pro.gui.app_state import AppState
 from myofit_pro.gui.clients_view import GOALS
+from myofit_pro.gui.wizard_step import WizardStep
 from myofit_pro.gui.theme import (
     Avatar,
     Card,
     EmptyState,
     IconBadge,
     SelectableCard,
+    clear_layout,
     goal_color,
 )
 
@@ -63,13 +65,7 @@ class _SelectionList(QWidget):
         return self._selected
 
     def clear(self) -> None:
-        while self._list.count():
-            item = self._list.takeAt(0)
-            if item is None:
-                continue
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+        clear_layout(self._list)
         self._cards = []
         self._selected = -1
 
@@ -86,10 +82,11 @@ class _SelectionList(QWidget):
         self.selection_changed.emit(index)
 
 
-class EvaluationStartView(QWidget):
+class EvaluationStartView(WizardStep):
     """Selección de cliente y objetivo antes de iniciar el wizard."""
 
     started = Signal()
+    CONTINUE_LABEL = "Continuar  →"
 
     def __init__(self, state: AppState, parent: QWidget | None = None):
         super().__init__(parent)
@@ -124,11 +121,6 @@ class EvaluationStartView(QWidget):
         goal_row.addWidget(self.goal_combo, stretch=1)
         card.body.addLayout(goal_row)
 
-        self.next_btn = PrimaryPushButton("Continuar  →")
-        self.next_btn.setEnabled(False)
-        self.next_btn.clicked.connect(self._on_next_clicked)
-        card.body.addWidget(self.next_btn)
-
         layout.addWidget(card)
 
     def reload(self) -> None:
@@ -136,7 +128,7 @@ class EvaluationStartView(QWidget):
             self.state.current_trainer.id
         )
         self.client_list.clear()
-        self.next_btn.setEnabled(False)
+        self.continue_state_changed.emit()
 
         self.empty_state.setVisible(not self._clients)
         self.client_list.setVisible(bool(self._clients))
@@ -152,23 +144,33 @@ class EvaluationStartView(QWidget):
             )
 
     def _on_client_selected(self, index: int) -> None:
-        self.next_btn.setEnabled(index >= 0)
+        self.continue_state_changed.emit()
         if 0 <= index < len(self._clients):
             self.goal_combo.setCurrentText(self._clients[index].goal)
 
-    def _on_next_clicked(self) -> None:
+    def on_enter(self) -> None:
+        self.reload()
+
+    def can_continue(self) -> bool:
+        return self.client_list.selected_index >= 0
+
+    def blocked_reason(self) -> str:
+        return "Elige un cliente de la lista para continuar."
+
+    def on_continue(self) -> bool:
         index = self.client_list.selected_index
         if index < 0:
-            return
+            return False
         self.state.active_client = self._clients[index]
         self.state.active_goal = self.goal_combo.currentText()
-        self.started.emit()
+        return True
 
 
-class EvaluationStep1View(QWidget):
+class EvaluationStep1View(WizardStep):
     """Selección de grupo muscular y músculo específico a evaluar."""
 
     muscle_selected = Signal()
+    CONTINUE_LABEL = "Continuar  →"
 
     def __init__(self, state: AppState, parent: QWidget | None = None):
         super().__init__(parent)
@@ -195,14 +197,9 @@ class EvaluationStep1View(QWidget):
 
         self.muscle_list = _SelectionList(card)
         self.muscle_list.selection_changed.connect(
-            lambda index: self.next_btn.setEnabled(index >= 0)
+            lambda _index: self.continue_state_changed.emit()
         )
         card.body.addWidget(self.muscle_list, stretch=1)
-
-        self.next_btn = PrimaryPushButton("Continuar  →")
-        self.next_btn.setEnabled(False)
-        self.next_btn.clicked.connect(self._on_next_clicked)
-        card.body.addWidget(self.next_btn)
 
         layout.addWidget(card)
 
@@ -220,7 +217,7 @@ class EvaluationStep1View(QWidget):
     def _load_muscles(self, group_id: int) -> None:
         self._muscles = self.state.muscle_repo.list_muscles(group_id)
         self.muscle_list.clear()
-        self.next_btn.setEnabled(False)
+        self.continue_state_changed.emit()
 
         for muscle in self._muscles:
             accent = Avatar.color_for(muscle.name)
@@ -237,10 +234,19 @@ class EvaluationStep1View(QWidget):
                 )
             )
 
-    def _on_next_clicked(self) -> None:
+    def on_enter(self) -> None:
+        self.reload()
+
+    def can_continue(self) -> bool:
+        return self.muscle_list.selected_index >= 0
+
+    def blocked_reason(self) -> str:
+        return "Elige el músculo que vas a evaluar."
+
+    def on_continue(self) -> bool:
         index = self.muscle_list.selected_index
         if index < 0 or not self.state.active_client:
-            return
+            return False
         muscle = self._muscles[index]
         self.state.set_eval_context(
             self.state.active_client, muscle, self.state.active_goal
@@ -255,5 +261,4 @@ class EvaluationStep1View(QWidget):
             goal=self.state.active_goal,
         )
         self.state.active_session_id = session.id
-
-        self.muscle_selected.emit()
+        return True

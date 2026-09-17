@@ -13,6 +13,7 @@ bandpass ya remueve el DC).
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -26,9 +27,55 @@ from myofit_pro.sensors.filters import (
 )
 
 
+ADC_MAX = 16383           # el convertidor es de 14 bits: 0..16383
+_RAIL_MARGIN = 256        # qué tan cerca de cada extremo cuenta como saturado
+
+# Fracción de muestras contra los topes a partir de la cual la señal se
+# considera inservible.
+#
+# Calibrado con hardware real, midiendo los dos extremos:
+#   - electrodo bien pegado, contracción MAXIMA : 0.000%
+#   - electrodo despegado                       : 2.9% a 25.4%
+# El sensor sano da cero absoluto incluso durante el esfuerzo máximo, así
+# que 0.5% deja muchísimo margen contra falsos positivos y aun así detecta
+# el caso despegado más leve que se llegó a medir.
+SATURATION_LIMIT = 0.005
+
+# Bloques sobre los que se promedia la saturación (~1 segundo).
+#
+# Cada bloque trae 119 muestras, así que una sola muestra contra el tope
+# ya representa 0.84% de su bloque: evaluar bloque por bloque haría que un
+# artefacto aislado disparara la alarma. Promediar ~1 s lo evita.
+SATURATION_WINDOW = 8
+
+
 def raw_to_microvolts(raw: np.ndarray) -> np.ndarray:
     """Convierte muestras crudas del ADC (0..16383) a microvolts."""
     return ((raw.astype(np.float64) - 8192.0) / 16384.0 * 2.49) * 2000.0
+
+
+def saturated_fraction(raw: np.ndarray) -> float:
+    """
+    Fracción de muestras pegadas a los extremos del ADC.
+
+    Sirve para detectar un electrodo despegado: cuando pierde contacto con
+    la piel, la entrada del amplificador queda flotando y la señal rebota
+    entre ambos extremos del convertidor. Medido contra hardware real, un
+    sensor bien colocado se mueve unos 50 counts alrededor del centro,
+    mientras que uno despegado recorrió de 1 a 16380.
+
+    Importa detectarlo porque esa señal produce un MVC alto y de apariencia
+    normal, y una calibración corrupta invalida en silencio todas las
+    evaluaciones posteriores de ese cliente.
+
+    No se usa el recorrido pico a pico como criterio: medido en hardware,
+    una contracción máxima legítima llega al 80% de la escala y un
+    electrodo despegado al 98%, demasiado cerca para distinguirlos.
+    """
+    if raw.size == 0:
+        return 0.0
+    railed = (raw <= _RAIL_MARGIN) | (raw >= ADC_MAX - _RAIL_MARGIN)
+    return float(np.count_nonzero(railed) / raw.size)
 
 
 @dataclass(slots=True)
@@ -42,6 +89,7 @@ class ProcessedBlock:
     envelope: np.ndarray       # envolvente
     rms: np.ndarray            # RMS deslizante
     contractions_in_block: int # cuántas veces se cruzó el umbral en este bloque
+    saturation: float = 0.0    # fracción de muestras contra los topes del ADC
 
 
 class MyoBlueChannel:
@@ -75,6 +123,7 @@ class MyoBlueChannel:
         self.latest_filtered = 0.0
         self.latest_envelope = 0.0
         self.latest_rms = 0.0
+        self._saturation_window: deque[float] = deque(maxlen=SATURATION_WINDOW)
         self.battery_volts = 0.0
         self.last_message_number = 0
         self.contraction_count = 0
@@ -109,6 +158,7 @@ class MyoBlueChannel:
         self._highpass.reset()
         self._envelope.reset()
         self._rms.reset()
+        self._saturation_window.clear()
 
     # ── Procesamiento ───────────────────────────────────────────────
 
@@ -123,6 +173,9 @@ class MyoBlueChannel:
 
         uv = raw_to_microvolts(raw_samples)
         self.latest_micro_volts = float(uv[-1]) if n else self.latest_micro_volts
+
+        saturation = saturated_fraction(raw_samples)
+        self._saturation_window.append(saturation)
 
         signal = uv
         if self.notch_enabled:
@@ -162,4 +215,17 @@ class MyoBlueChannel:
             envelope=envelope,
             rms=rms,
             contractions_in_block=contractions,
+            saturation=saturation,
         )
+
+    @property
+    def latest_saturation(self) -> float:
+        """Saturación promedio del último segundo de señal."""
+        if not self._saturation_window:
+            return 0.0
+        return sum(self._saturation_window) / len(self._saturation_window)
+
+    @property
+    def signal_is_valid(self) -> bool:
+        """False cuando el electrodo perdió contacto (ver `saturated_fraction`)."""
+        return self.latest_saturation < SATURATION_LIMIT

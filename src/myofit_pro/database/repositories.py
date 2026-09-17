@@ -123,11 +123,24 @@ class ClientRepository:
                 s.commit()
 
     def delete(self, client_id: int) -> None:
+        """
+        Borra un cliente y sus calibraciones.
+
+        Las evaluaciones se borran antes, desde `AppState.delete_client`,
+        porque además hay que limpiar la señal cruda que vive en DuckDB.
+        Las calibraciones sí se van aquí: son datos del cliente y no
+        tienen sentido sin él.
+        """
         with self._session_factory() as s:
             client = s.get(Client, client_id)
-            if client:
-                s.delete(client)
-                s.commit()
+            if client is None:
+                return
+            for calib in s.scalars(
+                select(MvcCalibration).where(MvcCalibration.client_id == client_id)
+            ):
+                s.delete(calib)
+            s.delete(client)
+            s.commit()
 
 
 class MuscleRepository:
@@ -245,6 +258,48 @@ class EvaluationRepository:
                 session_obj.status = EvaluationStatus.CANCELLED.value
                 session_obj.finished_at = dt.datetime.now()
                 s.commit()
+
+    def delete_session(self, session_id: int) -> None:
+        """
+        Borra una evaluación y todo lo que cuelga de ella.
+
+        Va por los hijos a mano (lecturas -> resultados -> sesión) en vez
+        de confiar en un borrado en cascada: SQLite no aplica las llaves
+        foráneas a menos que se active `PRAGMA foreign_keys` en cada
+        conexión, así que sin esto quedarían ExerciseResult y EmgReading
+        apuntando a una sesión que ya no existe.
+
+        La señal cruda vive en DuckDB y se borra aparte, desde la capa
+        que tiene acceso a las dos bases (ver `AppState.delete_evaluation`).
+        """
+        with self._session_factory() as s:
+            session_obj = s.get(EvaluationSession, session_id)
+            if session_obj is None:
+                return
+
+            result_ids = list(
+                s.scalars(
+                    select(ExerciseResult.id).where(ExerciseResult.session_id == session_id)
+                )
+            )
+            if result_ids:
+                for reading in s.scalars(
+                    select(EmgReading).where(EmgReading.exercise_result_id.in_(result_ids))
+                ):
+                    s.delete(reading)
+                for result in s.scalars(
+                    select(ExerciseResult).where(ExerciseResult.id.in_(result_ids))
+                ):
+                    s.delete(result)
+
+            # Las rutinas generadas a partir de esta evaluación se
+            # conservan: son un entregable que el cliente pudo haberse
+            # llevado. Solo se les quita la referencia.
+            for routine in s.scalars(select(Routine).where(Routine.session_id == session_id)):
+                routine.session_id = None
+
+            s.delete(session_obj)
+            s.commit()
 
     def find_in_progress(self, trainer_id: int) -> EvaluationSession | None:
         """

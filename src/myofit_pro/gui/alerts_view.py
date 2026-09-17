@@ -61,7 +61,7 @@ class AlertsView(QWidget):
 
         if not alerts:
             self._layout.addWidget(
-                EmptyState("✅", "Sin alertas por el momento.\nTodo funciona correctamente.")
+                EmptyState("", "Sin alertas por el momento.\nTodo funciona correctamente.")
             )
             return
 

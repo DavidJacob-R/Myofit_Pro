@@ -108,6 +108,19 @@ class EmgBurstStore:
             [client_id],
         ).fetchdf()
 
+    def delete_bursts_for_session(self, session_id: int) -> int:
+        """
+        Borra las señales guardadas de una evaluación y devuelve cuántas
+        eran. Se usa al eliminar la evaluación desde el historial: si
+        solo se borrara el registro de SQLite, los arrays de señal se
+        quedarían aquí ocupando espacio sin que nada los referencie.
+        """
+        row = self._con.execute(
+            "SELECT count(*) FROM emg_bursts WHERE session_id = ?", [session_id]
+        ).fetchone()
+        self._con.execute("DELETE FROM emg_bursts WHERE session_id = ?", [session_id])
+        return int(row[0]) if row else 0
+
     def close(self) -> None:
         self._con.close()
 

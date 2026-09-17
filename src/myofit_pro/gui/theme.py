@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
+    QLayout,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -102,10 +104,11 @@ def _shadow(widget: QWidget, color: str, blur: int = 28, alpha: int = 90, dy: in
 # de un color distinto en cada tarjeta).
 GOAL_COLORS = {
     "Hipertrofia": ACCENT_VIOLET,
+    "Definición": ACCENT_PINK,
     "Fuerza": ACCENT_BLUE,
     "Rehabilitación": ACCENT_TEAL,
     "Resistencia": ACCENT_AMBER,
-    "Postura": ACCENT_PINK,
+    "Postura": ACCENT_LIME,
 }
 
 
@@ -140,6 +143,35 @@ def score_color(score: float | None) -> str:
     if score >= 50:
         return ACCENT_AMBER
     return ACCENT_RED
+
+
+def clear_layout(layout: QLayout) -> None:
+    """
+    Vacía un layout y quita de la pantalla lo que contenía.
+
+    El `setParent(None)` es la parte importante y no es opcional:
+    `deleteLater()` solo agenda el borrado para cuando el bucle de
+    eventos vuelva a tener el control, así que sacar el widget del
+    layout no basta. Mientras tanto el widget sigue siendo hijo de su
+    contenedor y sigue dibujándose en la última posición que tuvo, ya
+    sin layout que lo acomode. Al reconstruir una lista en el mismo
+    turno (por ejemplo el historial de un cliente al abrir su perfil),
+    eso hace que las filas viejas queden encimadas sobre las nuevas.
+    Quitarle el padre lo saca de la pantalla en ese instante.
+    """
+    while layout.count():
+        item = layout.takeAt(0)
+        if item is None:
+            continue
+        widget = item.widget()
+        if widget is not None:
+            widget.setParent(None)
+            widget.deleteLater()
+            continue
+        child = item.layout()
+        if child is not None:
+            clear_layout(child)
+            child.deleteLater()
 
 
 # ── Hoja de estilo global ────────────────────────────────────────────
@@ -184,6 +216,15 @@ QToolTip {{
     border: 1px solid {BORDER_STRONG};
     border-radius: 8px;
     padding: 6px 10px;
+}}
+QDialog {{
+    background-color: {BG_MAIN};
+}}
+QMessageBox {{
+    background-color: {BG_CARD};
+}}
+QMessageBox QLabel {{
+    color: {TEXT_PRIMARY};
 }}
 """
 
@@ -350,9 +391,9 @@ class IconBadge(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         deep = QColor(color).darker(140).name()
         self.setStyleSheet(
-            f"background: {gradient(color, deep)}; "
+            f"background: {gradient(color, deep)}; color: white; "
             f"border-radius: {RADIUS_BADGE}px; border: none; "
-            f"font-size: {int(size * 0.42)}px;"
+            f"font-size: {int(size * 0.42)}px; font-weight: 800;"
         )
 
         if isinstance(icon, str):
@@ -562,18 +603,29 @@ class ListRow(QFrame):
 
             layout.addLayout(value_col)
 
+        self._chevron: QLabel | None = None
         if clickable:
-            chevron = QLabel("›")
-            chevron.setStyleSheet(
+            self._chevron = QLabel("›")
+            self._chevron.setStyleSheet(
                 f"color: {TEXT_MUTED}; font-size: 20px; font-weight: 700; "
                 f"background: transparent; border: none;"
             )
-            layout.addWidget(chevron)
+            layout.addWidget(self._chevron)
 
     def add_trailing(self, widget: QWidget) -> None:
-        """Agrega un control a la derecha (botones de acción de la fila)."""
+        """
+        Agrega un control a la derecha (botones de acción de la fila).
+
+        Va ANTES del chevron, no al final: el chevron indica "esta fila
+        te lleva a otro lado" y tiene que quedar pegado al borde, que es
+        donde el ojo lo busca. Un botón después de él rompe esa lectura.
+        """
         layout = self.layout()
-        if isinstance(layout, QHBoxLayout):
+        if not isinstance(layout, QHBoxLayout):
+            return
+        if self._chevron is not None:
+            layout.insertWidget(layout.indexOf(self._chevron), widget)
+        else:
             layout.addWidget(widget)
 
     def _apply_style(self, hover: bool) -> None:
@@ -715,6 +767,7 @@ class ClientCard(QFrame):
         last_score: str,
         last_activity: str,
         score_value: float | None = None,
+        profile_note: str = "",
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -763,11 +816,23 @@ class ClientCard(QFrame):
         metrics.addStretch(1)
         layout.addLayout(metrics)
 
+        footer = QHBoxLayout()
+        footer.setSpacing(8)
+
         activity_label = QLabel(last_activity)
         activity_label.setStyleSheet(
             f"color: {TEXT_MUTED}; font-size: 11px; background: transparent; border: none;"
         )
-        layout.addWidget(activity_label)
+        footer.addWidget(activity_label)
+        footer.addStretch(1)
+
+        # Una ficha sin datos físicos limita lo que el generador de
+        # rutinas puede calcular, así que se avisa aquí y no solo al
+        # abrir el perfil.
+        if profile_note:
+            footer.addWidget(Pill(profile_note, ACCENT_AMBER))
+
+        layout.addLayout(footer)
 
     @staticmethod
     def _metric(value: str, caption: str, color: str) -> QVBoxLayout:
@@ -1078,3 +1143,318 @@ class StepProgressBar(QWidget):
         for i, line in enumerate(self._lines):
             color = ACCENT_TEAL if (i + 1) < step else BORDER
             line.setStyleSheet(f"background-color: {color}; border: none; border-radius: 1px;")
+
+
+# ── Navegación ───────────────────────────────────────────────────────
+
+class BackButton(QFrame):
+    """
+    Botón de volver estándar de la app.
+
+    Hasta ahora ninguna pantalla tenía uno propio. La única forma de
+    retroceder era la flecha que FluentWindow pone arriba del menú
+    lateral, que se quitó porque no correspondía a la navegación real:
+    esa flecha solo deshacía cambios de sección, no pasos dentro de una
+    pantalla. Este botón vive dentro del contenido y lo controla la
+    vista que lo coloca, así que sí retrocede a donde el usuario espera.
+    """
+
+    clicked = Signal()
+
+    def __init__(
+        self,
+        text: str = "Volver",
+        accent: str = ACCENT_VIOLET,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.setObjectName("backButton")
+        self._accent = accent
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(5, 5, 15, 5)
+        layout.setSpacing(9)
+
+        self._chevron = QLabel("←")
+        self._chevron.setFixedSize(28, 28)
+        self._chevron.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._chevron)
+
+        self._label = QLabel(text)
+        layout.addWidget(self._label)
+
+        self._apply_style(hover=False)
+
+    def set_text(self, text: str) -> None:
+        self._label.setText(text)
+
+    def _apply_style(self, hover: bool) -> None:
+        bg = BG_CARD_HOVER if hover else BG_CARD
+        border = self._accent if hover else BORDER
+        self.setStyleSheet(
+            f"QFrame#backButton {{ background-color: {bg}; "
+            f"border: 1px solid {border}; border-radius: 19px; }}"
+        )
+        self._chevron.setStyleSheet(
+            f"background-color: {self._accent if hover else BG_ELEVATED}; "
+            f"color: {'white' if hover else TEXT_SECONDARY}; "
+            f"border-radius: 14px; font-size: 15px; font-weight: 700; border: none;"
+        )
+        self._label.setStyleSheet(
+            f"color: {TEXT_PRIMARY if hover else TEXT_SECONDARY}; font-size: 13px; "
+            f"font-weight: 600; background: transparent; border: none;"
+        )
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._apply_style(hover=True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._apply_style(hover=False)
+        super().leaveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+
+class ActionTile(QFrame):
+    """
+    Acción principal con forma de tarjeta grande: ícono, título y una
+    línea que explica qué pasa al tocarla.
+
+    Es para las cosas que el entrenador hace todos los días. Un botón
+    normal del tamaño del texto se pierde entre el resto de la pantalla,
+    y la acción más frecuente de la app no debería costar trabajo
+    encontrarla.
+    """
+
+    clicked = Signal()
+
+    def __init__(
+        self,
+        icon,
+        title: str,
+        caption: str,
+        accent: str = ACCENT_VIOLET,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.setObjectName("actionTile")
+        self._accent = accent
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(13)
+        layout.addWidget(IconBadge(icon, accent, size=42))
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 14px; font-weight: 700; "
+            f"background: transparent; border: none;"
+        )
+        text_col.addWidget(title_label)
+
+        caption_label = QLabel(caption)
+        caption_label.setWordWrap(True)
+        caption_label.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 12px; "
+            f"background: transparent; border: none;"
+        )
+        text_col.addWidget(caption_label)
+
+        layout.addLayout(text_col, stretch=1)
+
+        self._chevron = QLabel("›")
+        self._chevron.setStyleSheet(
+            f"color: {TEXT_MUTED}; font-size: 20px; font-weight: 700; "
+            f"background: transparent; border: none;"
+        )
+        layout.addWidget(self._chevron)
+
+        self._apply_style(hover=False)
+
+    def _apply_style(self, hover: bool) -> None:
+        bg = BG_CARD_HOVER if hover else BG_CARD
+        border = self._accent if hover else BORDER
+        self.setStyleSheet(
+            f"QFrame#actionTile {{ background-color: {bg}; "
+            f"border: 1px solid {border}; border-radius: {RADIUS_CARD}px; }}"
+        )
+        self._chevron.setStyleSheet(
+            f"color: {self._accent if hover else TEXT_MUTED}; font-size: 20px; "
+            f"font-weight: 700; background: transparent; border: none;"
+        )
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._apply_style(hover=True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._apply_style(hover=False)
+        super().leaveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+
+class DataChip(QFrame):
+    """
+    Dato suelto de ficha: valor arriba, etiqueta abajo.
+
+    Se usa para los datos físicos del cliente (edad, sexo, estatura,
+    peso, IMC), donde hay varios valores cortos que conviene leer de un
+    golpe y que no ameritan una StatCard completa cada uno.
+    """
+
+    def __init__(
+        self,
+        value: str,
+        caption: str,
+        color: str = TEXT_PRIMARY,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.setObjectName("dataChip")
+        self.setStyleSheet(
+            f"QFrame#dataChip {{ background-color: {BG_ELEVATED}; "
+            f"border: 1px solid {BORDER}; border-radius: 12px; }}"
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(13, 9, 13, 9)
+        layout.setSpacing(1)
+
+        self._value_label = QLabel(value)
+        self._value_label.setStyleSheet(
+            f"color: {color}; font-size: 17px; font-weight: 800; "
+            f"letter-spacing: -0.3px; background: transparent; border: none;"
+        )
+        layout.addWidget(self._value_label)
+
+        caption_label = QLabel(caption)
+        caption_label.setStyleSheet(
+            f"color: {TEXT_MUTED}; font-size: 10px; font-weight: 600; "
+            f"letter-spacing: 0.3px; background: transparent; border: none;"
+        )
+        layout.addWidget(caption_label)
+
+    def set_value(self, value: str) -> None:
+        self._value_label.setText(value)
+
+
+# ── Visualización de actividad ───────────────────────────────────────
+
+class ActivityChart(QWidget):
+    """
+    Barras de actividad por periodo (por ejemplo evaluaciones por
+    semana). Cada barra lleva su valor arriba y su etiqueta abajo.
+
+    No usa PyQtGraph a propósito: esto no es una señal que se recorra ni
+    se haga zoom, son seis u ocho números. Dibujarlo a mano evita cargar
+    un motor de gráficas completo para algo que no se va a explorar, y
+    deja el resultado alineado con el resto del diseño.
+    """
+
+    def __init__(
+        self,
+        values: list[float] | None = None,
+        labels: list[str] | None = None,
+        color: str = ACCENT_VIOLET,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self._values = list(values or [])
+        self._labels = list(labels or [])
+        self._color = color
+        self.setMinimumHeight(150)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+    def set_data(self, values: list[float], labels: list[str]) -> None:
+        self._values = list(values)
+        self._labels = list(labels)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (nombre impuesto por Qt)
+        if not self._values:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        label_height = 18
+        value_height = 16
+        width = self.width()
+        height = self.height()
+        plot_top = value_height
+        plot_bottom = height - label_height
+        plot_height = max(1, plot_bottom - plot_top)
+
+        count = len(self._values)
+        slot = width / count
+        bar_width = min(38.0, slot * 0.58)
+        # Si todo está en cero, `peak` evita dividir entre cero y deja
+        # las barras al mínimo visible en vez de desaparecer.
+        peak = max(self._values) or 1.0
+
+        # Línea base
+        painter.setPen(QPen(QColor(BORDER), 1))
+        painter.drawLine(0, plot_bottom, width, plot_bottom)
+
+        for index, value in enumerate(self._values):
+            center = slot * (index + 0.5)
+            bar_height = max(3.0, (value / peak) * plot_height)
+            rect = QRectF(
+                center - bar_width / 2,
+                plot_bottom - bar_height,
+                bar_width,
+                bar_height,
+            )
+
+            is_last = index == count - 1
+            base = QColor(self._color) if is_last else QColor(BORDER_STRONG)
+
+            fill = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+            fill.setColorAt(0.0, base)
+            fill.setColorAt(1.0, _alpha(base.name(), 70))
+
+            path = QPainterPath()
+            path.addRoundedRect(rect, 7, 7)
+            painter.fillPath(path, QBrush(fill))
+
+            # Valor encima de la barra (solo si hay algo que contar)
+            if value > 0:
+                painter.setPen(QPen(QColor(TEXT_PRIMARY if is_last else TEXT_SECONDARY)))
+                font = painter.font()
+                font.setPixelSize(11)
+                font.setBold(True)
+                painter.setFont(font)
+                painter.drawText(
+                    QRectF(center - slot / 2, plot_bottom - bar_height - value_height,
+                           slot, value_height),
+                    Qt.AlignmentFlag.AlignCenter,
+                    f"{value:.0f}",
+                )
+
+            if index < len(self._labels):
+                painter.setPen(QPen(QColor(TEXT_PRIMARY if is_last else TEXT_MUTED)))
+                font = painter.font()
+                font.setPixelSize(10)
+                font.setBold(is_last)
+                painter.setFont(font)
+                painter.drawText(
+                    QRectF(center - slot / 2, plot_bottom + 2, slot, label_height),
+                    Qt.AlignmentFlag.AlignCenter,
+                    self._labels[index],
+                )
+
+        painter.end()

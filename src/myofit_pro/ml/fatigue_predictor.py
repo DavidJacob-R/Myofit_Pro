@@ -22,10 +22,23 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from lightgbm import LGBMRegressor
-from xgboost import XGBRegressor
 
 from myofit_pro.ml.features import BurstFeatures
+
+# XGBoost y LightGBM NO se importan aquí arriba a propósito.
+#
+# Los dos traen librerías nativas que pueden fallar al cargar aunque el
+# paquete de Python esté instalado. En macOS, LightGBM necesita
+# `libomp.dylib`, que no viene con el sistema, y si falta lanza un
+# OSError al importarse. Con el import a nivel de módulo, ese error se
+# propagaba a `ml/__init__.py` y de ahí a cualquiera que tocara el
+# paquete `ml`, así que una dependencia opcional y todavía sin entrenar
+# tumbaba la aplicación entera.
+#
+# `fatigue_trend_from_reps()`, que es lo único de este archivo que se usa
+# hoy, no necesita ninguna de las dos: es una regresión lineal con numpy.
+# Los modelos se importan dentro de `FatigueGradientBooster.__init__`,
+# que es el único lugar donde de verdad hacen falta.
 
 
 @dataclass(slots=True)
@@ -93,14 +106,19 @@ class FatigueGradientBooster:
     """
 
     def __init__(self, backend: str = "xgboost"):
+        # Import tardío: ver la nota al inicio del archivo. Si la
+        # librería nativa no carga, el error sale aquí, al pedir
+        # explícitamente un modelo, y no al importar el paquete.
+        params = dict(n_estimators=200, max_depth=4, learning_rate=0.05, random_state=42)
+
         if backend == "xgboost":
-            self.model = XGBRegressor(
-                n_estimators=200, max_depth=4, learning_rate=0.05, random_state=42
-            )
+            from xgboost import XGBRegressor
+
+            self.model = XGBRegressor(**params)
         elif backend == "lightgbm":
-            self.model = LGBMRegressor(
-                n_estimators=200, max_depth=4, learning_rate=0.05, random_state=42
-            )
+            from lightgbm import LGBMRegressor
+
+            self.model = LGBMRegressor(**params)
         else:
             raise ValueError("backend debe ser 'xgboost' o 'lightgbm'")
         self.backend = backend

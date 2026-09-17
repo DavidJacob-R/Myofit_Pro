@@ -3,6 +3,10 @@ Mis clientes — cuadrícula de tarjetas (ClientCard) en vez de tabla.
 Cada tarjeta muestra avatar con iniciales, objetivo, número de
 evaluaciones, último score y cuándo fue la última actividad.
 Clic en una tarjeta abre el perfil del cliente.
+
+El alta y la edición usan el mismo formulario, que vive en
+`client_form.py` porque creció a tres pasos. Se re-exporta `GOALS` desde
+aquí para no romper lo que ya lo importaba de este módulo.
 """
 
 from __future__ import annotations
@@ -12,66 +16,60 @@ import datetime as dt
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
-    QFormLayout,
     QGridLayout,
     QHBoxLayout,
+    QLabel,
     QMessageBox,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
-from qfluentwidgets import ComboBox, LineEdit, PrimaryPushButton, PushButton
+from qfluentwidgets import PrimaryPushButton
 
 from myofit_pro.gui.app_state import AppState
-from myofit_pro.gui.theme import ClientCard, EmptyState, PageHeader
+from myofit_pro.gui.client_form import GOALS, ClientFormDialog
+from myofit_pro.gui.theme import (
+    ACCENT_AMBER,
+    ACCENT_LIME,
+    ACCENT_RED,
+    ACCENT_TEAL,
+    TEXT_MUTED,
+    TEXT_SECONDARY,
+    ClientCard,
+    EmptyState,
+    PageHeader,
+    clear_layout,
+)
+from myofit_pro.body_composition import bmi_category
 
-GOALS = ["Hipertrofia", "Fuerza", "Rehabilitación", "Resistencia", "Postura"]
+__all__ = ["GOALS", "ClientFormDialog", "ClientsView", "bmi_reading", "body_fat_reading"]
 
 _CARD_MIN_WIDTH = 290   # ancho cómodo de una ClientCard, define cuántas caben
 
+# Color de cada clasificación. El texto lo pone body_composition, que es
+# donde viven los cortes; aquí solo se le asigna el color del tema.
+_CATEGORY_COLORS = {
+    "Bajo peso": ACCENT_AMBER,
+    "Normal": ACCENT_LIME,
+    "Sobrepeso": ACCENT_AMBER,
+    "Obesidad": ACCENT_RED,
+    "Esencial": ACCENT_AMBER,
+    "Atlético": ACCENT_TEAL,
+    "En forma": ACCENT_LIME,
+    "Promedio": ACCENT_AMBER,
+    "Alto": ACCENT_RED,
+}
 
-class AddEditClientDialog(QDialog):
-    """Modal de alta/edición — equivalente a AddEditClientView.xaml."""
 
-    def __init__(self, parent: QWidget | None = None, client=None):
-        super().__init__(parent)
-        self.client = client
-        self.setWindowTitle("Editar cliente" if client else "Nuevo cliente")
-        self.setMinimumWidth(380)
+def bmi_reading(value: float | None) -> tuple[str, str]:
+    """Texto y color de la clasificación de IMC."""
+    label = bmi_category(value)
+    return (label, _CATEGORY_COLORS.get(label, TEXT_SECONDARY))
 
-        form = QFormLayout(self)
-        form.setSpacing(10)
 
-        self.name_input = LineEdit(self)
-        self.goal_input = ComboBox(self)
-        self.goal_input.addItems(GOALS)
-        self.notes_input = LineEdit(self)
-
-        if client:
-            self.name_input.setText(client.full_name)
-            if client.goal in GOALS:
-                self.goal_input.setCurrentText(client.goal)
-            self.notes_input.setText(client.notes or "")
-
-        form.addRow("Nombre completo:", self.name_input)
-        form.addRow("Objetivo:", self.goal_input)
-        form.addRow("Notas:", self.notes_input)
-
-        buttons = QHBoxLayout()
-        save_btn = PrimaryPushButton("Guardar")
-        cancel_btn = PushButton("Cancelar")
-        save_btn.clicked.connect(self.accept)
-        cancel_btn.clicked.connect(self.reject)
-        buttons.addWidget(cancel_btn)
-        buttons.addWidget(save_btn)
-        form.addRow(buttons)
-
-    def values(self) -> dict:
-        return {
-            "full_name": self.name_input.text().strip(),
-            "goal": self.goal_input.currentText(),
-            "notes": self.notes_input.text().strip() or None,
-        }
+def body_fat_reading(label: str) -> str:
+    """Color de una clasificación de grasa corporal ya calculada."""
+    return _CATEGORY_COLORS.get(label, TEXT_SECONDARY)
 
 
 class ClientsView(QWidget):
@@ -100,11 +98,17 @@ class ClientsView(QWidget):
         header_row.addWidget(add_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
         layout.addLayout(header_row)
 
+        hint = QLabel("Clic para abrir el perfil  ·  clic derecho para editar o eliminar")
+        hint.setStyleSheet(
+            f"color: {TEXT_MUTED}; font-size: 11px; background: transparent; border: none;"
+        )
+        layout.addWidget(hint)
+
         # Área desplazable con la cuadrícula de tarjetas
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll.setStyleSheet(f"QScrollArea {{ background: transparent; border: none; }}")
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
         self._grid_host = QWidget()
         self._grid_host.setStyleSheet("background: transparent;")
@@ -136,19 +140,14 @@ class ClientsView(QWidget):
 
         self.empty_state.setVisible(len(clients) == 0)
         self._grid_host.setVisible(len(clients) > 0)
-        self.header.set_subtitle(
-            f"{len(clients)} cliente{'s' if len(clients) != 1 else ''}  ·  "
-            "clic para ver el perfil, clic derecho para editar"
-        )
 
-        # Limpiar tarjetas anteriores
-        while self.grid.count():
-            item = self.grid.takeAt(0)
-            if item is None:
-                continue
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+        incomplete = sum(1 for c in clients if not c.profile_is_complete)
+        subtitle = f"{len(clients)} cliente{'s' if len(clients) != 1 else ''}"
+        if incomplete:
+            subtitle += f"  ·  {incomplete} con la ficha incompleta"
+        self.header.set_subtitle(subtitle)
+
+        clear_layout(self.grid)
 
         columns = self._column_count()
         self._laid_out_columns = columns
@@ -167,6 +166,7 @@ class ClientsView(QWidget):
                     self._relative_date(sessions[0].started_at) if sessions else "Sin evaluar"
                 ),
                 score_value=score_value,
+                profile_note="" if client.profile_is_complete else "Ficha incompleta",
             )
             card.clicked.connect(lambda c=client: self.client_selected.emit(c))
             card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -209,33 +209,37 @@ class ClientsView(QWidget):
 
     def _show_card_menu(self, client) -> None:
         """Menú contextual (clic derecho) con editar / eliminar."""
-        from qfluentwidgets import RoundMenu, Action
+        from qfluentwidgets import Action, RoundMenu
+        from qfluentwidgets import FluentIcon as FIF
 
         menu = RoundMenu(parent=self)
-        edit_action = Action("Editar")
-        edit_action.triggered.connect(lambda: self._on_edit_clicked(client))
-        delete_action = Action("Eliminar")
+        edit_action = Action(FIF.EDIT, "Editar ficha")
+        edit_action.triggered.connect(lambda: self.edit_client(client))
+        delete_action = Action(FIF.DELETE, "Eliminar cliente")
         delete_action.triggered.connect(lambda: self._on_delete_clicked(client))
         menu.addAction(edit_action)
         menu.addAction(delete_action)
         menu.exec(self.cursor().pos())
 
     def _on_add_clicked(self) -> None:
-        dialog = AddEditClientDialog(self)
+        dialog = ClientFormDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            values = dialog.values()
-            if not values["full_name"]:
-                QMessageBox.warning(self, "Dato requerido", "El nombre es obligatorio.")
-                return
-            self.state.client_repo.create(self.state.current_trainer.id, **values)
+            self.state.client_repo.create(
+                self.state.current_trainer.id, **dialog.values()
+            )
             self.reload()
 
-    def _on_edit_clicked(self, client) -> None:
-        dialog = AddEditClientDialog(self, client=client)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            values = dialog.values()
-            self.state.client_repo.update(client.id, **values)
-            self.reload()
+    def edit_client(self, client) -> bool:
+        """
+        Abre el formulario de edición. Devuelve True si se guardó, para
+        que quien lo llame (la lista o el perfil) recargue lo suyo.
+        """
+        dialog = ClientFormDialog(self, client=client)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        self.state.client_repo.update(client.id, **dialog.values())
+        self.reload()
+        return True
 
     def _on_delete_clicked(self, client) -> None:
         confirm = QMessageBox.question(
@@ -247,5 +251,5 @@ class ClientsView(QWidget):
             QMessageBox.StandardButton.No,
         )
         if confirm == QMessageBox.StandardButton.Yes:
-            self.state.client_repo.delete(client.id)
+            self.state.delete_client(client.id)
             self.reload()

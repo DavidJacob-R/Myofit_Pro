@@ -13,9 +13,9 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import FluentIcon as FIF
-from qfluentwidgets import PrimaryPushButton
 
 from myofit_pro.gui.app_state import AppState
+from myofit_pro.gui.wizard_step import WizardStep
 from myofit_pro.gui.theme import (
     ACCENT_AMBER,
     ACCENT_BLUE,
@@ -29,12 +29,15 @@ from myofit_pro.gui.theme import (
     Pill,
     ScoreRing,
     StatCard,
+    clear_layout,
     goal_color,
 )
 
 
-class EvaluationStep6View(QWidget):
+class EvaluationStep6View(WizardStep):
     start_new_evaluation = Signal()
+    # Último paso: el botón del pie ya no avanza, arranca otra evaluación.
+    CONTINUE_LABEL = "Nueva evaluación"
 
     def __init__(self, state: AppState, parent: QWidget | None = None):
         super().__init__(parent)
@@ -46,20 +49,13 @@ class EvaluationStep6View(QWidget):
         self._load_report()
 
     def _load_report(self) -> None:
-        while self._layout.count():
-            item = self._layout.takeAt(0)
-            if item is None:
-                continue
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+        clear_layout(self._layout)
 
         session_id = self.state.active_session_id
         if session_id is None:
             self._layout.addWidget(
                 EmptyState("🤔", "No hay una sesión de evaluación activa para mostrar.")
             )
-            self._add_new_eval_button()
             return
 
         session = self.state.evaluation_repo.get_with_results(session_id)
@@ -67,7 +63,6 @@ class EvaluationStep6View(QWidget):
             self._layout.addWidget(
                 EmptyState("❓", "No se encontró la sesión en la base de datos.")
             )
-            self._add_new_eval_button()
             return
 
         client = self.state.client_repo.get(session.client_id)
@@ -93,7 +88,6 @@ class EvaluationStep6View(QWidget):
             )
 
         self._layout.addStretch(1)
-        self._add_new_eval_button()
 
     # ── Bloques ──────────────────────────────────────────────────────
 
@@ -219,7 +213,14 @@ class EvaluationStep6View(QWidget):
         )
         return row
 
-    def _add_new_eval_button(self) -> None:
-        btn = PrimaryPushButton("Nueva evaluación")
-        btn.clicked.connect(self.start_new_evaluation.emit)
-        self._layout.addWidget(btn)
+    def on_enter(self) -> None:
+        self._load_report()
+
+    def on_continue(self) -> bool:
+        """
+        En el último paso el botón del pie no avanza: arranca una
+        evaluación nueva. Devuelve False para que el contenedor no
+        intente pasar a un paso 7 que no existe.
+        """
+        self.start_new_evaluation.emit()
+        return False

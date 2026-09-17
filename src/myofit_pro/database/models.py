@@ -1,21 +1,3 @@
-"""
-Modelos ORM (SQLAlchemy 2.0, estilo declarativo con Mapped/mapped_column).
-
-Equivalencia directa con los modelos C# de EMGTrainer:
-
-    Trainer.cs           -> Trainer
-    Client.cs            -> Client
-    MuscleGrups.cs       -> MuscleGroup
-    Muscle.cs            -> Muscle
-    MvcCalibration.cs    -> MvcCalibration
-    EvaluationSession.cs -> EvaluationSession
-    ExerciseResult.cs    -> ExerciseResult
-    EmgReading.cs        -> EmgReading   (metadatos; la señal cruda va a DuckDB)
-    Exercise.cs          -> Exercise
-    Routine.cs           -> Routine
-    RoutineExercise.cs   -> RoutineExercise
-"""
-
 from __future__ import annotations
 
 import datetime as dt
@@ -42,12 +24,54 @@ class Trainer(Base):
 
 
 class Client(Base):
+    """
+    Ficha de un cliente.
+
+    Los datos físicos (sexo, edad, estatura, peso) no son decorativos:
+    son las variables con las que el generador de rutinas ajusta volumen
+    e intensidad, y sirven para comparar la activación medida contra lo
+    esperable en alguien de ese perfil. Todos son opcionales para no
+    bloquear el alta de un cliente cuando faltan, pero mientras más
+    completos, mejor la predicción.
+
+    `full_name` se conserva como el nombre que se muestra en toda la app
+    y se mantiene sincronizado con `first_name` + `last_name`. No se
+    eliminó a favor de los dos campos nuevos porque las fichas dadas de
+    alta antes solo tienen el nombre completo, sin separar.
+    """
+
     __tablename__ = "clients"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     trainer_id: Mapped[int] = mapped_column(ForeignKey("trainers.id"))
     full_name: Mapped[str] = mapped_column(String(150))
+    first_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
     goal: Mapped[str] = mapped_column(String(80), default="Hipertrofia")
+    sex: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    age_years: Mapped[int | None] = mapped_column(nullable=True)
+    height_cm: Mapped[float | None] = mapped_column(nullable=True)
+    weight_kg: Mapped[float | None] = mapped_column(nullable=True)
+
+    # Circunferencias para el método de la Marina. Opcionales: solo
+    # hacen falta si se quiere un porcentaje de grasa que no sea una
+    # estimación estadística.
+    neck_cm: Mapped[float | None] = mapped_column(nullable=True)
+    waist_cm: Mapped[float | None] = mapped_column(nullable=True)
+    hip_cm: Mapped[float | None] = mapped_column(nullable=True)
+
+    # Porcentaje de grasa y de dónde salió. La fuente se guarda porque
+    # de ella depende si el número sirve como variable de entrada a un
+    # modelo o si es solo IMC, edad y sexo reescritos.
+    # Ver ml/body_composition.BodyFatSource.
+    body_fat_pct: Mapped[float | None] = mapped_column(nullable=True)
+    body_fat_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    # Contexto de entrenamiento: cuánto volumen tolera y en cuántos días
+    # hay que repartirlo.
+    experience_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    days_per_week: Mapped[int | None] = mapped_column(nullable=True)
+
     birth_date: Mapped[dt.date | None] = mapped_column(nullable=True)
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(default=dt.datetime.now)
@@ -55,6 +79,48 @@ class Client(Base):
     trainer: Mapped["Trainer"] = relationship(back_populates="clients")
     evaluations: Mapped[list["EvaluationSession"]] = relationship(back_populates="client")
     calibrations: Mapped[list["MvcCalibration"]] = relationship(back_populates="client")
+
+    @property
+    def bmi(self) -> float | None:
+        """Índice de masa corporal, o None si falta estatura o peso."""
+        from myofit_pro.body_composition import bmi
+
+        return bmi(self.height_cm, self.weight_kg)
+
+    @property
+    def body_fat_is_measured(self) -> bool:
+        """
+        True cuando el porcentaje de grasa es un dato propio del cuerpo
+        del cliente (medido, o calculado de circunferencias) y no la
+        estimación derivada de IMC, edad y sexo.
+        """
+        from myofit_pro.body_composition import BodyFatSource
+
+        return self.body_fat_source in (
+            BodyFatSource.MEASURED.value,
+            BodyFatSource.NAVY.value,
+        )
+
+    @property
+    def profile_is_complete(self) -> bool:
+        """
+        True cuando la ficha trae todo lo que el generador de rutinas
+        usa. La UI marca las incompletas para que se puedan terminar.
+
+        El porcentaje de grasa no entra en la cuenta: siempre se puede
+        estimar a partir de los demás datos, así que nunca falta del
+        todo.
+        """
+        return all(
+            (
+                self.sex,
+                self.age_years,
+                self.height_cm,
+                self.weight_kg,
+                self.experience_level,
+                self.days_per_week,
+            )
+        )
 
 
 class MuscleGroup(Base):

@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from qfluentwidgets import ComboBox, PushButton
+from qfluentwidgets import ComboBox, PushButton, ToolButton
+from qfluentwidgets import FluentIcon as FIF
 
 from myofit_pro.database.models import EvaluationStatus
 from myofit_pro.gui.theme import (
@@ -27,6 +28,7 @@ from myofit_pro.gui.theme import (
     ACCENT_RED,
     BG_CARD,
     BG_CARD_HOVER,
+    BG_ELEVATED,
     BORDER,
     BORDER_STRONG,
     RADIUS_CARD,
@@ -38,6 +40,7 @@ from myofit_pro.gui.theme import (
     PageHeader,
     Pill,
     Sparkline,
+    clear_layout,
     score_color,
 )
 
@@ -50,6 +53,7 @@ class _SessionCard(QWidget):
     resume_requested = Signal(int)   # session_id
     cancel_requested = Signal(int)   # session_id
     open_requested = Signal(int)     # session_id
+    delete_requested = Signal(int)   # session_id
 
     def __init__(
         self,
@@ -159,14 +163,28 @@ class _SessionCard(QWidget):
             score_col.addWidget(caption)
             outer.addLayout(score_col)
 
-            if self._interactive:
-                chevron = QLabel("›")
-                chevron.setStyleSheet(
-                    f"color: {TEXT_MUTED}; font-size: 20px; font-weight: 700; "
-                    f"background: transparent; border: none;"
-                )
-                outer.addWidget(chevron)
-                self.setCursor(Qt.CursorShape.PointingHandCursor)
+        # La papelera va en todas las tarjetas, incluidas las canceladas:
+        # una evaluación cancelada es justo la que más ganas dan de
+        # quitar del historial.
+        delete_btn = ToolButton(FIF.DELETE)
+        delete_btn.setFixedSize(32, 32)
+        delete_btn.setToolTip("Eliminar esta evaluación")
+        delete_btn.setStyleSheet(
+            f"ToolButton {{ background-color: {BG_ELEVATED}; border: 1px solid {BORDER}; "
+            f"border-radius: 9px; }}"
+            f"ToolButton:hover {{ background-color: {ACCENT_RED}; border-color: {ACCENT_RED}; }}"
+        )
+        delete_btn.clicked.connect(lambda: self.delete_requested.emit(session.id))
+        outer.addWidget(delete_btn)
+
+        if self._interactive:
+            chevron = QLabel("›")
+            chevron.setStyleSheet(
+                f"color: {TEXT_MUTED}; font-size: 20px; font-weight: 700; "
+                f"background: transparent; border: none;"
+            )
+            outer.addWidget(chevron)
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def _apply_style(self, hover: bool) -> None:
         bg = BG_CARD_HOVER if hover else BG_CARD
@@ -195,6 +213,7 @@ class _SessionCard(QWidget):
 class HistoryView(QWidget):
     session_selected = Signal(int)          # abrir reporte
     resume_session_requested = Signal(int)  # retomar evaluación en curso
+    data_changed = Signal()                 # se borró o canceló algo, refrescar el resto
 
     def __init__(self, state, parent: QWidget | None = None):
         super().__init__(parent)
@@ -277,13 +296,7 @@ class HistoryView(QWidget):
         self._render_sessions(sessions)
 
     def _render_sessions(self, sessions) -> None:
-        while self.list_layout.count():
-            item = self.list_layout.takeAt(0)
-            if item is None:
-                continue
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+        clear_layout(self.list_layout)
 
         self.empty_state.setVisible(len(sessions) == 0)
         self._list_host.setVisible(len(sessions) > 0)
@@ -302,6 +315,7 @@ class HistoryView(QWidget):
             card.open_requested.connect(self.session_selected.emit)
             card.resume_requested.connect(self.resume_session_requested.emit)
             card.cancel_requested.connect(self._on_cancel_requested)
+            card.delete_requested.connect(self._on_delete_requested)
             self.list_layout.addWidget(card)
 
     def _load_signal_preview(self, session_id: int, points: int = 60) -> list[float]:
@@ -341,3 +355,26 @@ class HistoryView(QWidget):
         if confirm == QMessageBox.StandardButton.Yes:
             self.state.evaluation_repo.cancel_session(session_id)
             self.reload()
+            self.data_changed.emit()
+
+    def _on_delete_requested(self, session_id: int) -> None:
+        session = next((s for s in self._sessions if s.id == session_id), None)
+        client = self.state.client_repo.get(session.client_id) if session else None
+        who = client.full_name if client else "este cliente"
+        when = session.started_at.strftime("%d/%m/%Y") if session else "esa fecha"
+
+        confirm = QMessageBox.question(
+            self,
+            "Eliminar evaluación",
+            f"¿Eliminar la evaluación de {who} del {when}?\n\n"
+            "Se borran también sus resultados y la señal EMG grabada. "
+            "No se puede deshacer.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        self.state.delete_evaluation(session_id)
+        self.reload()
+        self.data_changed.emit()

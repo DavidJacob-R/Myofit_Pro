@@ -42,6 +42,7 @@ class MainWindow(FluentWindow):
 
         self.state = AppState(current_trainer=trainer)
         self._pending_badge: InfoBadge | None = None
+        self._report_origin = None   # sección desde la que se abrió el reporte
 
         # La flecha de "regresar" que FluentWindow pone arriba del sidebar
         # no aplica aquí: la navegación es plana (cada sección es raíz) y
@@ -113,17 +114,39 @@ class MainWindow(FluentWindow):
         # Historial -> retomar una evaluación en curso
         self.history_view.resume_session_requested.connect(self._resume_evaluation)
 
+        # Vista general -> atajos a las otras secciones
+        self.dashboard_view.new_evaluation_requested.connect(
+            lambda: self.switchTo(self.eval_wizard)
+        )
+        self.dashboard_view.clients_requested.connect(self._open_clients)
+        self.dashboard_view.sensors_requested.connect(
+            lambda: self.switchTo(self.sensors_view)
+        )
+        self.dashboard_view.client_selected.connect(self._open_client_profile)
+
+        # Reporte -> volver a donde se venía
+        self.report_view.back_requested.connect(self._leave_report)
+
         # Al completarse una evaluación (Paso 6), refrescar las pantallas
         # que dependen de datos que el wizard acaba de guardar.
-        self.eval_wizard.evaluation_completed.connect(self.history_view.reload)
-        self.eval_wizard.evaluation_completed.connect(self.dashboard_view.refresh)
-        self.eval_wizard.evaluation_completed.connect(self.clients_container.list_view.reload)
+        self.eval_wizard.evaluation_completed.connect(self._refresh_all)
+
+        # Borrar una evaluación cambia cifras que otras secciones ya
+        # tienen dibujadas, así que se refrescan todas.
+        self.history_view.data_changed.connect(self._refresh_all)
+        self.clients_container.data_changed.connect(self._refresh_all)
 
         # Badge de evaluaciones pendientes
         self.eval_wizard.pending_changed.connect(self.refresh_pending_badge)
 
         # Cerrar sesión desde Mi perfil
         self.profile_view.logout_requested.connect(self._on_logout)
+
+    def _refresh_all(self) -> None:
+        self.history_view.reload()
+        self.dashboard_view.refresh()
+        self.clients_container.list_view.reload()
+        self.refresh_pending_badge()
 
     def _on_section_changed(self, _index: int) -> None:
         current = self.stackedWidget.currentWidget()
@@ -142,9 +165,27 @@ class MainWindow(FluentWindow):
         self.eval_wizard.resume_session(session_id)
         self.switchTo(self.eval_wizard)
 
+    def _open_clients(self) -> None:
+        self.clients_container.show_list()
+        self.switchTo(self.clients_container)
+
+    def _open_client_profile(self, client) -> None:
+        self.clients_container.show_profile(client)
+        self.switchTo(self.clients_container)
+
     def _open_report(self, session_id: int) -> None:
+        # Se recuerda de dónde se llegó para que el botón de volver del
+        # reporte regrese ahí y no a una sección fija. El reporte se
+        # abre desde la vista general, el historial y el perfil de un
+        # cliente, y en los tres casos "volver" significa algo distinto.
+        current = self.stackedWidget.currentWidget()
+        if current is not self.report_view:
+            self._report_origin = current
         self.report_view.load_session(session_id)
         self.switchTo(self.report_view)
+
+    def _leave_report(self) -> None:
+        self.switchTo(self._report_origin or self.dashboard_view)
 
     # ── Badge de evaluaciones pendientes ─────────────────────────────
 
