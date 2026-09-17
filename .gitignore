@@ -1,0 +1,42 @@
+# Entorno virtual (uv lo reconstruye con `uv sync`)
+.venv/
+
+# Bytecode de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches de herramientas
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Empaquetado
+build/
+dist/
+*.egg-info/
+*.build/
+*.dist/
+*.onefile-build/
+
+# Salidas regenerables del generador de datos sintéticos.
+# Se reconstruyen con:
+#   uv run python -m myofit_pro.ml.synthetic --salida datos/
+datos/
+datos_sinteticos/
+
+# Base de datos local del usuario. Vive en ~/.myofit_pro/, pero si
+# alguien la copia al proyecto para depurar, que no se suba: trae
+# datos reales de clientes.
+*.db
+*.duckdb
+*.duckdb.wal
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Editores
+.idea/
+.vscode/
+*.swp
