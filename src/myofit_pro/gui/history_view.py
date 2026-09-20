@@ -19,10 +19,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from qfluentwidgets import ComboBox, PushButton, ToolButton
+from qfluentwidgets import PushButton, ToolButton
 from qfluentwidgets import FluentIcon as FIF
 
 from myofit_pro.database.models import EvaluationStatus
+from myofit_pro.gui.client_picker import ClientPicker
 from myofit_pro.gui.theme import (
     ACCENT_AMBER,
     ACCENT_RED,
@@ -43,9 +44,6 @@ from myofit_pro.gui.theme import (
     clear_layout,
     score_color,
 )
-
-_ALL_CLIENTS = "Todos los clientes"
-
 
 class _SessionCard(QWidget):
     """Tarjeta de una evaluación en el historial."""
@@ -101,7 +99,12 @@ class _SessionCard(QWidget):
         title_row.addStretch(1)
         left.addLayout(title_row)
 
-        reps = session.results[0].series_count if session.results else 0
+        # Se suman todas las series de la batería, no solo la primera:
+        # una sesión con seis series medidas decía "8 repeticiones"
+        # porque leía únicamente el primer resultado.
+        reps = sum(r.series_count for r in session.results)
+        series = len(session.results)
+
         detail_parts = [
             session.started_at.strftime("%d/%m/%Y · %H:%M"),
             session.goal,
@@ -112,6 +115,8 @@ class _SessionCard(QWidget):
             detail_parts.append("cancelada")
         else:
             detail_parts.append(f"{reps} repeticiones")
+            if series > 1:
+                detail_parts.append(f"{series} series")
 
         detail = QLabel("  ·  ".join(detail_parts))
         detail.setStyleSheet(
@@ -242,9 +247,14 @@ class HistoryView(QWidget):
         filter_label = QLabel("Filtrar:")
         filter_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px;")
         filter_row.addWidget(filter_label)
-        self.client_filter = ComboBox(self)
-        self.client_filter.currentIndexChanged.connect(self._apply_filter)
+        self.client_filter = ClientPicker(self, placeholder="Todos los clientes")
+        self.client_filter.client_changed.connect(lambda _c: self._apply_filter())
         filter_row.addWidget(self.client_filter, stretch=1)
+
+        clear_btn = PushButton("Todos")
+        clear_btn.setToolTip("Quitar el filtro de cliente")
+        clear_btn.clicked.connect(self._clear_filter)
+        filter_row.addWidget(clear_btn)
         layout.addLayout(filter_row)
 
         scroll = QScrollArea(self)
@@ -275,25 +285,30 @@ class HistoryView(QWidget):
         )
         self._clients = self.state.client_repo.list_for_trainer(self.state.current_trainer.id)
 
-        current = self.client_filter.currentText()
         self.client_filter.blockSignals(True)
-        self.client_filter.clear()
-        self.client_filter.addItems([_ALL_CLIENTS] + [c.full_name for c in self._clients])
-        if current and current in [_ALL_CLIENTS] + [c.full_name for c in self._clients]:
-            self.client_filter.setCurrentText(current)
+        self.client_filter.set_clients(self._clients)
         self.client_filter.blockSignals(False)
 
         self._apply_filter()
 
     def _apply_filter(self) -> None:
-        selected = self.client_filter.currentText()
-        if selected and selected != _ALL_CLIENTS:
-            client = next((c for c in self._clients if c.full_name == selected), None)
-            sessions = [s for s in self._sessions if client and s.client_id == client.id]
-        else:
-            sessions = self._sessions
-
+        """
+        Filtra por el cliente escrito. Si lo escrito no corresponde a
+        nadie —el campo vacío, o un nombre a medio teclear— se enseña
+        todo: es mejor que dejar la pantalla en blanco mientras se
+        escribe.
+        """
+        client = self.client_filter.current_client()
+        sessions = (
+            [s for s in self._sessions if s.client_id == client.id]
+            if client is not None
+            else self._sessions
+        )
         self._render_sessions(sessions)
+
+    def _clear_filter(self) -> None:
+        self.client_filter.clear_selection()
+        self._apply_filter()
 
     def _render_sessions(self, sessions) -> None:
         clear_layout(self.list_layout)

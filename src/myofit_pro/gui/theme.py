@@ -1458,3 +1458,114 @@ class ActivityChart(QWidget):
                 )
 
         painter.end()
+
+
+class CollapsibleGroup(QFrame):
+    """
+    Grupo plegable: una cabecera con título que abre y cierra su
+    contenido.
+
+    Se usa para listas que crecen y se vuelven inmanejables — el
+    historial de un cliente con doce evaluaciones obliga a recorrer toda
+    la pantalla para ver la de arriba. Agrupadas por día y plegadas, la
+    ficha vuelve a caber de un vistazo y se abre solo lo que interesa.
+
+    El contenido se llena por `self.body`, igual que en `Card`.
+    """
+
+    toggled = Signal(bool)
+
+    def __init__(
+        self,
+        title: str,
+        caption: str = "",
+        expanded: bool = False,
+        accent: str = ACCENT_VIOLET,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.setObjectName("collapsible")
+        self._expanded = expanded
+        self._accent = accent
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self._header = QFrame(self)
+        self._header.setObjectName("collapsibleHeader")
+        self._header.setCursor(Qt.CursorShape.PointingHandCursor)
+        head = QHBoxLayout(self._header)
+        head.setContentsMargins(14, 11, 16, 11)
+        head.setSpacing(12)
+
+        self._chevron = QLabel("›")
+        self._chevron.setFixedWidth(14)
+        self._chevron.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        head.addWidget(self._chevron)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(1)
+        self._title = QLabel(title)
+        self._title.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 14px; font-weight: 700; "
+            f"background: transparent; border: none;"
+        )
+        text_col.addWidget(self._title)
+
+        self._caption = QLabel(caption)
+        self._caption.setVisible(bool(caption))
+        self._caption.setStyleSheet(
+            f"color: {TEXT_MUTED}; font-size: 11px; "
+            f"background: transparent; border: none;"
+        )
+        text_col.addWidget(self._caption)
+        head.addLayout(text_col, stretch=1)
+
+        self._trailing = QHBoxLayout()
+        self._trailing.setSpacing(7)
+        head.addLayout(self._trailing)
+
+        outer.addWidget(self._header)
+
+        self._content = QWidget(self)
+        self._content.setStyleSheet("background: transparent;")
+        self.body = QVBoxLayout(self._content)
+        self.body.setContentsMargins(14, 2, 14, 12)
+        self.body.setSpacing(8)
+        outer.addWidget(self._content)
+
+        self._header.mouseReleaseEvent = self._on_header_clicked  # type: ignore[method-assign]
+        self._apply_state()
+
+    def add_trailing(self, widget: QWidget) -> None:
+        """Agrega algo a la derecha de la cabecera (un contador, un chip)."""
+        self._trailing.addWidget(widget)
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._expanded = expanded
+        self._apply_state()
+
+    @property
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def _on_header_clicked(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.set_expanded(not self._expanded)
+            self.toggled.emit(self._expanded)
+
+    def _apply_state(self) -> None:
+        self._content.setVisible(self._expanded)
+        self._chevron.setText("⌄" if self._expanded else "›")
+        self._chevron.setStyleSheet(
+            f"color: {self._accent if self._expanded else TEXT_MUTED}; "
+            f"font-size: 17px; font-weight: 800; "
+            f"background: transparent; border: none;"
+        )
+        borde = self._accent if self._expanded else BORDER
+        self.setStyleSheet(
+            f"QFrame#collapsible {{ background-color: {BG_CARD}; "
+            f"border: 1px solid {borde}; border-radius: {RADIUS_CARD - 4}px; }}"
+            f"QFrame#collapsibleHeader {{ background: transparent; border: none; }}"
+        )

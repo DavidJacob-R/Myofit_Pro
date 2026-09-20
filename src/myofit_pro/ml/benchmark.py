@@ -1,52 +1,70 @@
-"""
-Banco de pruebas de algoritmos sobre los datos sintéticos.
+"""Banco de pruebas de algoritmos sobre los datos sintéticos.
 
-Compara varios modelos en las dos cosas que los sensores SÍ permiten
-aprender, y deja los resultados en CSV para analizarlos aparte.
+Posición en el flujo
+--------------------
+Fuera del flujo de la aplicación. Consume el conjunto de datos que produce
+`myofit_pro.ml.synthetic` y escribe sus resultados en CSV. Su función es
+decidir, antes de acumular historial real, qué familia de algoritmos tiene
+sentido y cuántos clientes hacen falta para que aporte algo.
 
-LOS DOS OBJETIVOS QUE SE PRUEBAN
-================================
+Objetivos evaluados
+-------------------
+``fatigue_slope_hz_per_rep``
+    Velocidad de fatiga del cliente, medida como la caída de la frecuencia
+    mediana repetición a repetición. Es el objetivo por el que conviene
+    empezar porque la etiqueta se obtiene de la propia señal, sin
+    anotación manual.
 
-1. `fatigue_slope_hz_per_rep`
-   Qué tan rápido se fatiga el cliente, medido como la caída de la
-   frecuencia mediana repetición a repetición. Es el mejor objetivo para
-   empezar porque la etiqueta sale sola de la señal: no hay que pedirle
-   a nadie que clasifique nada a mano.
+``mean_activation_pct``
+    Activación que un ejercicio concreto produce en un cliente concreto.
+    Es el objetivo de mayor valor para el producto: permite ordenar
+    ejercicios por persona, que es justamente lo que una tabla de rutinas
+    no puede hacer.
 
-2. `mean_activation_pct`
-   Cuánta activación produce un ejercicio concreto en un cliente
-   concreto. Es el objetivo más valioso del producto: permite ordenar
-   ejercicios por persona, que es justo lo que una tabla de rutinas no
-   puede hacer.
+Fuera de alcance por decisión de diseño
+---------------------------------------
+Series y repeticiones no se tratan como un problema de predicción. No hay
+etiqueta que aprender —habría que reproducir lo que ya decidió un
+entrenador— y los rangos por objetivo están establecidos en la literatura
+de entrenamiento. Una tabla de reglas acierta desde el primer día, se
+puede explicar al cliente y no necesita datos. Esa tabla es
+`myofit_pro.routine_engine.GOAL_SCHEMES`.
 
-LO QUE NO SE PRUEBA AQUÍ, A PROPÓSITO
-=====================================
-
-Series y repeticiones. No es un problema de predicción: no hay etiqueta
-que aprender (habría que copiar lo que ya decidió un entrenador), y la
-respuesta ya está establecida en la literatura de entrenamiento como
-rangos por objetivo. Una tabla de reglas acierta desde el primer día, se
-puede explicar al cliente y no necesita datos. Ver la nota al final de
-la salida del programa.
-
-LA TRAMPA METODOLÓGICA QUE ESTE ARCHIVO DEMUESTRA
-=================================================
-
+Sesgo metodológico que este módulo demuestra
+--------------------------------------------
 Un mismo cliente aporta varias evaluaciones, y esas evaluaciones se
-parecen entre sí. Si se parte el conjunto al azar, el mismo cliente cae
-en entrenamiento y en prueba: el modelo lo memoriza y reporta un
-resultado excelente que se desploma con un cliente nuevo, que es el caso
-que de verdad importa.
+parecen entre sí. Si el conjunto se particiona al azar, el mismo cliente
+aparece en entrenamiento y en prueba: el modelo memoriza su nivel
+individual y produce una métrica excelente que se desploma ante un cliente
+nuevo, que es el caso de uso real.
 
-La partición correcta agrupa por `client_id` (GroupKFold). El programa
-corre las dos y muestra la diferencia, porque es un error que se ve
-bonito en un reporte y no sirve para nada.
+La partición correcta agrupa por ``client_id``
+(`sklearn.model_selection.GroupKFold`). Este módulo ejecuta ambas y
+cuantifica la diferencia, porque la partición incorrecta produce cifras
+atractivas y sin valor.
 
-USO
-===
+Uso
+---
+::
 
     uv run python -m myofit_pro.ml.synthetic --clientes 60 --salida datos/
     uv run python -m myofit_pro.ml.benchmark datos/
+
+See Also
+--------
+myofit_pro.ml.synthetic : Generador del conjunto de datos.
+myofit_pro.ml.within_subject : Análisis del diseño intra-sujeto.
+
+References
+----------
+.. [1] Varoquaux, G. et al. (2017). "Assessing and tuning brain decoders:
+       cross-validation, caveats, and guidelines". *NeuroImage*, 145,
+       166-179.
+.. [2] Roberts, D. R. et al. (2017). "Cross-validation strategies for
+       data with temporal, spatial, hierarchical, or phylogenetic
+       structure". *Ecography*, 40(8), 913-929.
+.. [3] Pedregosa, F. et al. (2011). "Scikit-learn: Machine Learning in
+       Python". *Journal of Machine Learning Research*, 12, 2825-2830.
 """
 
 from __future__ import annotations
@@ -64,7 +82,9 @@ from sklearn.model_selection import GroupKFold, KFold, cross_val_predict
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-# Variables del cliente. Son las que la app ya captura.
+#: Predictores procedentes de la ficha del cliente. Son constantes dentro
+#: de un cliente, lo que limita su capacidad explicativa a la varianza
+#: entre clientes (ver `variance_split`).
 CLIENT_FEATURES = [
     "age_years",
     "height_cm",
@@ -76,6 +96,7 @@ CLIENT_FEATURES = [
     "sex_male",
 ]
 
+#: Variables objetivo evaluadas, con su descripción para los informes.
 TARGETS = {
     "fatigue_slope_hz_per_rep": "Fatigabilidad (Hz por repetición)",
     "mean_activation_pct": "Activación media (% del MVC)",
@@ -83,17 +104,25 @@ TARGETS = {
 
 
 def _models() -> dict[str, object]:
-    """
-    Los candidatos, del más simple al más complejo.
+    """Construye los modelos candidatos, del más simple al más complejo.
 
-    El orden importa. `Promedio` es el modelo que siempre predice la
-    media: si un algoritmo no le gana, no está aprendiendo nada, y esa
-    comparación es la que más se olvida.
+    Returns
+    -------
+    dict of str to object
+        Estimadores compatibles con scikit-learn, indexados por nombre.
 
-    No hay redes neuronales en la lista. Con unos cientos de filas y
-    ocho variables no tienen nada que aportar frente a un modelo lineal
-    regularizado, y sí traen sobreajuste y una caja negra imposible de
-    explicarle a un entrenador.
+    Notes
+    -----
+    El primer candidato es `sklearn.dummy.DummyRegressor`, que predice
+    siempre la media. Es la línea base obligada: un algoritmo que no la
+    supere no está aprendiendo nada, por buenas que parezcan sus
+    métricas en términos absolutos.
+
+    No se incluyen redes neuronales. Con unos cientos de observaciones y
+    ocho predictores no aportan nada frente a un modelo lineal
+    regularizado, y sí añaden sobreajuste y falta de interpretabilidad,
+    que en este producto importa: el entrenador debe poder entender por
+    qué se le propone un ejercicio.
     """
     return {
         "Promedio (línea base)": DummyRegressor(strategy="mean"),
@@ -113,6 +142,7 @@ def _models() -> dict[str, object]:
 
 
 def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
+    """Calcula error absoluto medio, error cuadrático medio y R²."""
     error = y_true - y_pred
     mae = float(np.mean(np.abs(error)))
     rmse = float(np.sqrt(np.mean(error**2)))
@@ -123,16 +153,37 @@ def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
 
 
 def _prepare(df: pd.DataFrame, target: str) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
-    """Arma X, y y los grupos (client_id) para la validación."""
+    """Construye la matriz de diseño, el objetivo y los grupos.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Tabla unida de clientes y evaluaciones.
+    target : str
+        Nombre de la columna objetivo, una clave de `TARGETS`.
+
+    Returns
+    -------
+    X : pandas.DataFrame
+        Matriz de diseño.
+    y : numpy.ndarray
+        Vector objetivo.
+    groups : numpy.ndarray
+        Identificador de cliente de cada fila, para
+        `sklearn.model_selection.GroupKFold`.
+
+    Notes
+    -----
+    Para el objetivo de activación se añade el ejercicio codificado como
+    variables indicadoras. La codificación disyuntiva es obligada: los
+    ejercicios carecen de orden, y numerarlos informaría al modelo de
+    que el ejercicio 3 se sitúa entre el 2 y el 4.
+    """
     data = df.copy()
     data["sex_male"] = (data["sex"] == "Masculino").astype(float)
 
     features = list(CLIENT_FEATURES)
 
-    # Para predecir la activación hace falta saber de qué ejercicio se
-    # habla. Se codifica one-hot y no como número: los ejercicios no
-    # tienen orden, y numerarlos le diría al modelo que el ejercicio 3
-    # está "entre" el 2 y el 4.
     if target == "mean_activation_pct":
         dummies = pd.get_dummies(data["exercise"], prefix="ej", dtype=float)
         data = pd.concat([data, dummies], axis=1)
@@ -145,7 +196,24 @@ def _prepare(df: pd.DataFrame, target: str) -> tuple[pd.DataFrame, np.ndarray, n
 
 
 def run_target(df: pd.DataFrame, target: str, folds: int = 5) -> pd.DataFrame:
-    """Compara todos los modelos en un objetivo, con las dos particiones."""
+    """Compara todos los modelos en un objetivo, con ambas particiones.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Tabla unida de clientes y evaluaciones.
+    target : str
+        Columna objetivo.
+    folds : int, default=5
+        Particiones de la validación cruzada.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Una fila por modelo, con el error absoluto medio y el R² bajo
+        partición por cliente, el R² bajo partición aleatoria y la
+        diferencia entre ambos, que cuantifica la fuga de información.
+    """
     X, y, groups = _prepare(df, target)
     rows = []
 
@@ -175,12 +243,30 @@ def run_target(df: pd.DataFrame, target: str, folds: int = 5) -> pd.DataFrame:
 
 
 def learning_curve(df: pd.DataFrame, target: str, folds: int = 5) -> pd.DataFrame:
-    """
-    Cómo mejora el mejor modelo conforme hay más clientes.
+    """Calcula la curva de aprendizaje frente al número de clientes.
 
-    Responde la pregunta que de verdad importa antes de invertir en
-    esto: cuántos clientes hay que acumular antes de que el modelo valga
-    más que predecir el promedio.
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Tabla unida de clientes y evaluaciones.
+    target : str
+        Columna objetivo.
+    folds : int, default=5
+        Particiones de la validación cruzada.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Una fila por combinación de tamaño de muestra y modelo, con su
+        error absoluto medio y su R².
+
+    Notes
+    -----
+    Responde a la pregunta operativa previa a cualquier inversión en
+    modelado: cuántos clientes hay que acumular para que un modelo
+    supere a la predicción por la media. Los subconjuntos son anidados,
+    tomando siempre los primeros clientes por identificador, de modo que
+    cada tamaño incluya al anterior.
     """
     all_clients = np.array(sorted(df["client_id"].unique()))
     rows = []
@@ -214,11 +300,31 @@ def learning_curve(df: pd.DataFrame, target: str, folds: int = 5) -> pd.DataFram
 
 
 def coefficients(df: pd.DataFrame, target: str) -> pd.DataFrame:
-    """
-    Coeficientes de Ridge, para compararlos con `verdad_base.json`.
+    """Ajusta una regresión de Ridge y devuelve sus coeficientes.
 
-    Si el modelo no recupera una relación que sabemos que está en los
-    datos, tampoco va a encontrar la que esté en los datos reales.
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Tabla unida de clientes y evaluaciones.
+    target : str
+        Columna objetivo.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Coeficientes estandarizados, ordenados por magnitud
+        descendente.
+
+    Notes
+    -----
+    Los coeficientes se comparan con los de ``verdad_base.json``, que
+    contiene los valores empleados en la generación. Un modelo incapaz
+    de recuperar una relación presente por construcción tampoco
+    encontrará las que pueda haber en los datos reales.
+
+    Los predictores se estandarizan previamente, de modo que los
+    coeficientes sean comparables entre sí pese a estar medidos en
+    unidades distintas.
     """
     X, y, _ = _prepare(df, target)
     model = Pipeline([("escala", StandardScaler()), ("modelo", Ridge(alpha=1.0))])
@@ -235,20 +341,35 @@ def coefficients(df: pd.DataFrame, target: str) -> pd.DataFrame:
 
 
 def variance_split(df: pd.DataFrame, target: str) -> dict[str, float]:
-    """
-    Cuánta de la variación del objetivo está ENTRE clientes y cuánta
-    DENTRO de cada cliente.
+    """Descompone la varianza del objetivo en sus componentes entre y dentro.
 
-    Es el diagnóstico más útil antes de entrenar nada, y casi nadie lo
-    hace. Las variables de la ficha (edad, peso, grasa, experiencia) son
-    constantes dentro de un cliente, así que solo pueden explicar la
-    parte que varía ENTRE clientes. Lo que varía de una evaluación a otra
-    del mismo cliente es, por construcción, invisible para esas
-    variables.
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Tabla unida de clientes y evaluaciones.
+    target : str
+        Columna objetivo.
 
-    Si el 70% de la variación es interna, el techo de cualquier modelo
-    basado en la ficha es un R2 de 0.30, por bueno que sea el algoritmo.
-    Saberlo evita perseguir un 0.8 que no existe.
+    Returns
+    -------
+    dict of str to float
+        Proporción de varianza entre clientes, proporción dentro de cada
+        cliente, y el techo teórico de R² para un modelo basado en la
+        ficha, que coincide con la primera.
+
+    Notes
+    -----
+    Es el diagnóstico que conviene ejecutar antes de entrenar nada. Los
+    predictores de la ficha —edad, peso, grasa, experiencia— son
+    constantes dentro de un cliente, por lo que solo pueden explicar la
+    componente entre clientes. Lo que varía de una evaluación a otra del
+    mismo cliente les resulta invisible por construcción.
+
+    Si el 70 % de la varianza es intra-cliente, el techo de cualquier
+    modelo basado en la ficha es un R² de 0,30, con independencia del
+    algoritmo. Conocer ese techo evita perseguir una métrica inalcanzable
+    y orienta hacia el diseño intra-sujeto que analiza
+    `myofit_pro.ml.within_subject`.
     """
     overall = df[target].mean()
     between = 0.0
@@ -272,15 +393,30 @@ def variance_split(df: pd.DataFrame, target: str) -> dict[str, float]:
 
 
 def collinearity_check(df: pd.DataFrame, target: str) -> pd.DataFrame:
-    """
-    Compara dos conjuntos de variables para mostrar el efecto de meter
-    columnas que se derivan unas de otras.
+    """Cuantifica el efecto de incluir predictores colineales.
 
-    El IMC es peso entre estatura al cuadrado, así que dar las tres al
-    mismo tiempo es dar la misma información dos veces. El resultado
-    típico son coeficientes grandes con signos alternados que se cancelan
-    entre sí: el modelo predice parecido, pero los pesos ya no dicen
-    nada sobre qué influye en qué.
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Tabla unida de clientes y evaluaciones.
+    target : str
+        Columna objetivo.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Una fila por conjunto de predictores, con su error, su R² y dos
+        indicadores de inestabilidad: el coeficiente de mayor magnitud y
+        la suma de magnitudes.
+
+    Notes
+    -----
+    El índice de masa corporal es el peso dividido por el cuadrado de la
+    estatura, de modo que incluir las tres variables aporta la misma
+    información dos veces. El efecto característico son coeficientes de
+    gran magnitud y signos alternos que se compensan entre sí: la
+    capacidad predictiva apenas varía, pero los coeficientes dejan de ser
+    interpretables como contribución de cada variable.
     """
     rows = []
     sets = {
@@ -322,10 +458,12 @@ def collinearity_check(df: pd.DataFrame, target: str) -> pd.DataFrame:
 
 
 def _print_table(df: pd.DataFrame) -> None:
+    """Imprime una tabla sin la columna de índice."""
     print(df.to_string(index=False))
 
 
 def main() -> None:
+    """Ejecuta el banco de pruebas completo e imprime y guarda sus tablas."""
     parser = argparse.ArgumentParser(
         description="Compara algoritmos de predicción sobre los datos sintéticos."
     )

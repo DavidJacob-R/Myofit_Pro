@@ -1,66 +1,94 @@
-"""
-Simulación del diseño intra-sujeto: cada cliente comparado consigo mismo.
+"""Análisis de viabilidad del diseño intra-sujeto por simulación.
 
-EL DISEÑO QUE SE SIMULA
-=======================
+Posición en el flujo
+--------------------
+Fuera del flujo de la aplicación. Es una herramienta de línea de órdenes
+que justifica dos decisiones de diseño del producto: cuántas veces hay que
+medir cada ejercicio en la batería de tamizaje, y cada cuántas semanas
+tiene sentido repetir la evaluación. Sus conclusiones están incorporadas a
+`myofit_pro.progress` en forma de umbrales.
 
-1. Tamizaje inicial: el cliente hace una batería con todos los ejercicios
-   posibles de un músculo y se mide la activación en cada uno.
-2. Con eso se ordenan los ejercicios de mejor a peor PARA ESA PERSONA y se
-   arma la rutina con los de arriba.
-3. A las 2 o 4 semanas se vuelve a medir para ver si progresó.
-4. Se repite, y cada lectura nueva afina la siguiente rutina.
+El diseño que se simula
+-----------------------
+1. Tamizaje inicial: el cliente ejecuta una batería con todos los
+   ejercicios disponibles de un músculo y se registra su activación en
+   cada uno.
+2. Los ejercicios se ordenan de mayor a menor activación *para esa
+   persona* y la rutina se construye con los primeros.
+3. Transcurridas dos a cuatro semanas se repite la medición para evaluar
+   el progreso.
+4. Cada nueva lectura refina la rutina siguiente.
 
-POR QUÉ ESTE DISEÑO ES MEJOR QUE COMPARAR ENTRE PERSONAS
-=======================================================
+Por qué intra-sujeto y no entre sujetos
+---------------------------------------
+La amplitud sEMG de una persona depende de su espesor de tejido adiposo
+subcutáneo, su masa muscular y su anatomía. Al comparar entre personas,
+ese nivel individual constituye la mayor fuente de varianza y absorbe casi
+toda la capacidad predictiva de cualquier modelo.
 
-Cada persona tiene un nivel propio de amplitud que depende de su grasa
-subcutánea, su masa muscular y su anatomía. Al comparar entre personas,
-ese nivel propio es ruido que hay que modelar y que se come casi toda la
-capacidad de predicción.
+Al comparar a una persona consigo misma, ese nivel se cancela por estar
+presente por igual en todas sus mediciones. El problema pasa de estimar un
+valor absoluto a ordenar una lista, que es a la vez más fácil y más
+próximo a lo que la aplicación necesita.
 
-Al comparar a la persona consigo misma, ese nivel propio **se cancela**,
-porque está presente por igual en todas sus mediciones. El problema pasa
-de "predecir un número" a "ordenar una lista", que es mucho más fácil y
-además es lo que de verdad se necesita para armar la rutina.
+La pregunta que decide la viabilidad
+------------------------------------
+Si un ejercicio mide 72 % y otro 68 %, ¿esa diferencia de cuatro puntos es
+real o es ruido de medición? Este módulo la responde por simulación de
+Montecarlo: dada una repetibilidad conocida, estima cuántas repeticiones
+por ejercicio hacen falta para que el orden observado coincida con el
+orden verdadero.
 
-LA PREGUNTA QUE DECIDE SI FUNCIONA
-==================================
+Dos fuentes de ruido
+--------------------
+- **Dentro de la sesión**: los electrodos permanecen colocados. La
+  variabilidad procede de la ejecución del gesto y de la fatiga
+  acumulada.
+- **Entre sesiones**: los electrodos se retiran y se recolocan en una
+  posición ligeramente distinta, y el estado de la piel cambia. Ambos
+  factores alteran la ganancia de todo lo que se mida ese día, lo que
+  hace esta fuente sustancialmente mayor.
 
-Si el curl martillo mide 72% y el predicador 68%, ¿esa diferencia de 4
-puntos es real o es ruido de medición?
+  De ahí la importancia de normalizar contra una contracción voluntaria
+  máxima tomada en la misma sesión: el factor de ganancia afecta por
+  igual al máximo y a la medición, de modo que el cociente lo elimina.
+  Sin esa normalización, comparar la semana 0 con la semana 4 sería
+  comparar dos escalas distintas.
 
-Todo el diseño depende de eso. Este módulo lo responde por simulación:
-dada una repetibilidad de medición, calcula cuántas veces hay que medir
-cada ejercicio para que el orden que sale sea el orden verdadero.
+Limitaciones
+------------
+Los coeficientes de variación por defecto proceden de la literatura, no
+de medidas tomadas con los sensores MYOblue de este proyecto. Mientras no
+se midan con el protocolo que documenta `protocolo_de_repetibilidad`,
+todos los resultados de este módulo son hipótesis condicionadas a ese
+parámetro.
 
-DOS TIPOS DE RUIDO, Y NO SON IGUALES
-====================================
+La electromiografía de superficie no mide carga. El peso de trabajo
+procede de una estimación de repetición máxima y del porcentaje asociado
+al objetivo, nunca de la señal.
 
-- **Dentro de la sesión**: los electrodos no se mueven. El ruido viene de
-  la variabilidad del gesto y de la fatiga acumulada. Es el caso bueno.
-
-- **Entre sesiones**: los electrodos se quitaron y se volvieron a poner en
-  un lugar ligeramente distinto, la piel está en otro estado, y eso
-  cambia la ganancia de todo lo que se mida ese día. Es bastante peor.
-
-  Por eso importa tanto que la app normalice contra un MVC tomado en la
-  MISMA sesión: ese factor de ganancia aparece igual en el MVC y en la
-  medición, así que al dividir se cancela. Sin eso, comparar la semana 0
-  con la semana 4 sería comparar dos escalas distintas.
-
-LO QUE LOS SENSORES NO PUEDEN DAR
-=================================
-
-Kilos. El sEMG mide activación eléctrica, no carga. El peso de trabajo
-sale de una estimación de repetición máxima y del porcentaje que
-corresponde al objetivo, no de la señal.
-
-USO
-===
+Uso
+---
+::
 
     uv run python -m myofit_pro.ml.within_subject
     uv run python -m myofit_pro.ml.within_subject --cv 0.15 --ejercicios 8
+
+See Also
+--------
+myofit_pro.progress : Aplica estos umbrales a los datos reales.
+myofit_pro.ml.benchmark : Análisis paralelo del diseño entre sujetos.
+
+References
+----------
+.. [1] Weir, J. P. (2005). "Quantifying test-retest reliability using the
+       intraclass correlation coefficient and the SEM". *Journal of
+       Strength and Conditioning Research*, 19(1), 231-240.
+.. [2] Kendall, M. G. (1938). "A new measure of rank correlation".
+       *Biometrika*, 30(1-2), 81-93.
+.. [3] Burden, A. (2010). "How should we normalize electromyograms
+       obtained from healthy participants?". *Journal of
+       Electromyography and Kinesiology*, 20(6), 1023-1035.
 """
 
 from __future__ import annotations
@@ -72,21 +100,49 @@ import numpy as np
 import pandas as pd
 from scipy.stats import kendalltau
 
-# Repetibilidad típica reportada para amplitud sEMG normalizada al MVC,
-# como coeficiente de variación. Son rangos de la literatura, NO medidos
-# con este hardware: hay que medirlos (ver `protocolo_de_repetibilidad`).
-CV_DENTRO_SESION = 0.10      # electrodos puestos, mismo día
-CV_ENTRE_SESIONES = 0.20     # electrodos re-colocados, otro día
+#: Coeficiente de variación de la amplitud sEMG normalizada dentro de una
+#: misma sesión, con los electrodos sin recolocar. Valor de referencia de
+#: la literatura, pendiente de medir con este hardware.
+CV_DENTRO_SESION = 0.10
+
+#: Coeficiente de variación entre sesiones, con los electrodos retirados y
+#: recolocados. Valor de referencia de la literatura, pendiente de medir
+#: con este hardware.
+CV_ENTRE_SESIONES = 0.20
 
 
 @dataclass(slots=True)
 class ScreeningResult:
+    """Resultado de una simulación de tamizaje.
+
+    Attributes
+    ----------
+    repeticiones : int
+        Mediciones realizadas por ejercicio en la simulación.
+    cv : float
+        Coeficiente de variación supuesto.
+    acierta_el_mejor : float
+        Proporción de simulaciones en las que el ejercicio de mayor
+        activación medida coincide con el de mayor activación verdadera.
+    mejor_en_top3 : float
+        Proporción de simulaciones en las que el mejor ejercicio
+        verdadero queda entre los tres primeros del orden medido. Es el
+        criterio operativo, ya que la rutina toma varios ejercicios por
+        músculo y no solo el primero.
+    tau_orden : float
+        Tau de Kendall medio entre el orden verdadero y el medido, de -1
+        a 1. Resume la concordancia del ranking completo.
+    sesiones_necesarias : float
+        Series totales que la batería exige al cliente en una sesión,
+        igual al producto de ejercicios por repeticiones.
+    """
+
     repeticiones: int
     cv: float
-    acierta_el_mejor: float       # probabilidad de elegir el mejor ejercicio real
-    mejor_en_top3: float          # probabilidad de que el mejor real quede en el top 3
-    tau_orden: float              # concordancia del orden completo (Kendall, -1 a 1)
-    sesiones_necesarias: float    # series totales que implica el tamizaje
+    acierta_el_mejor: float
+    mejor_en_top3: float
+    tau_orden: float
+    sesiones_necesarias: float
 
 
 def simulate_screening(
@@ -97,18 +153,40 @@ def simulate_screening(
     trials: int = 4000,
     seed: int = 11,
 ) -> ScreeningResult:
-    """
-    Simula el tamizaje inicial de UNA persona, muchas veces.
+    """Simula por Montecarlo el tamizaje inicial de un cliente.
 
-    `spread_pct` es qué tan separados están los ejercicios entre sí para
-    esa persona, en puntos de activación. Es el parámetro más importante
-    y el que no conocemos: si todos los ejercicios de un músculo activan
-    casi igual en una persona, no hay nada que ordenar por más que se
-    mida bien. Si se separan 15 o 20 puntos, ordenarlos es fácil.
+    Parameters
+    ----------
+    n_exercises : int, default=6
+        Ejercicios que componen la batería de tamizaje.
+    spread_pct : float, default=12.0
+        Desviación típica de la activación verdadera entre los ejercicios
+        de esa persona, en puntos de porcentaje.
+    repeats : int, default=1
+        Mediciones por ejercicio, promediadas antes de ordenar.
+    cv : float, default=CV_DENTRO_SESION
+        Coeficiente de variación de la medición.
+    trials : int, default=4000
+        Simulaciones a ejecutar.
+    seed : int, default=11
+        Semilla del generador, para reproducibilidad.
+
+    Returns
+    -------
+    ScreeningResult
+        Probabilidades de acierto y concordancia media del orden.
+
+    Notes
+    -----
+    `spread_pct` es el parámetro determinante y el peor conocido: si
+    todos los ejercicios de un músculo activan de forma similar en una
+    persona, no hay orden que recuperar por precisa que sea la medición;
+    si difieren en 15 o 20 puntos, el orden se recupera incluso con
+    repetibilidad mediocre.
 
     El ruido se aplica de forma multiplicativa porque la variabilidad de
-    la amplitud del sEMG es proporcional a la amplitud, no una cantidad
-    fija de microvolts.
+    la amplitud sEMG es proporcional a la propia amplitud, no una
+    cantidad fija de microvoltios.
     """
     rng = np.random.default_rng(seed)
 
@@ -117,11 +195,9 @@ def simulate_screening(
     taus = []
 
     for _ in range(trials):
-        # Activación verdadera de cada ejercicio para esta persona
         verdad = rng.normal(65.0, spread_pct, size=n_exercises)
         mejor_real = int(np.argmax(verdad))
 
-        # Cada ejercicio se mide `repeats` veces y se promedia
         ruido = rng.normal(1.0, cv, size=(repeats, n_exercises))
         medido = (verdad * ruido).mean(axis=0)
 
@@ -146,21 +222,43 @@ def simulate_screening(
 
 
 def minimal_detectable_change(cv: float, repeats: int = 1, baseline: float = 65.0) -> float:
-    """
-    Cambio mínimo detectable al 95% de confianza, en puntos de activación.
+    """Calcula el cambio mínimo detectable al 95 % de confianza.
 
-    Es el umbral por debajo del cual una diferencia NO se puede
-    distinguir del ruido de medición. Si el cambio mínimo detectable es
-    de 12 puntos y el cliente mejoró 6, la app no tiene forma de saberlo
-    y decir que mejoró sería inventar.
+    Parameters
+    ----------
+    cv : float
+        Coeficiente de variación de la medición.
+    repeats : int, default=1
+        Mediciones promediadas por sesión.
+    baseline : float, default=65.0
+        Valor de referencia sobre el que se expresa la variabilidad, en
+        puntos de activación.
 
-    La fórmula es la estándar en medición clínica repetida:
+    Returns
+    -------
+    float
+        Umbral en puntos de activación. Una diferencia inferior no es
+        distinguible del ruido de medición.
 
-        CMD95 = 1.96 x raíz(2) x error estándar de medición
+    Notes
+    -----
+    Se aplica la formulación estándar de la medición clínica repetida:
 
-    El error estándar baja con la raíz del número de mediciones, que es
-    la razón por la que medir dos veces ayuda bastante y medir diez veces
-    ya casi no.
+    .. math:: CMD_{95} = 1{,}96 \\sqrt{2}\\, SEM
+
+    donde el error estándar de medición es
+    :math:`SEM = baseline \\cdot cv / \\sqrt{repeats}`. El factor
+    :math:`\\sqrt{2}` recoge que la diferencia entre dos mediciones
+    acumula el error de ambas.
+
+    El error estándar decrece con la raíz del número de mediciones, de
+    modo que pasar de una a dos reduce el umbral un 29 % y pasar de nueve
+    a diez apenas un 5 %.
+
+    See Also
+    --------
+    myofit_pro.progress.minimal_detectable_change : Misma fórmula aplicada
+        a los datos reales del cliente.
     """
     sem = baseline * cv / np.sqrt(repeats)
     return float(1.96 * np.sqrt(2) * sem)
@@ -174,17 +272,36 @@ def longitudinal_power(
     trials: int = 20000,
     seed: int = 13,
 ) -> float:
-    """
-    Probabilidad de detectar una mejora real entre dos sesiones.
+    """Estima la potencia estadística del seguimiento entre dos sesiones.
 
-    Simula medir al cliente hoy y dentro de 4 semanas, con el ruido
-    propio de haber quitado y vuelto a poner los electrodos, y cuenta
-    cuántas veces la diferencia medida supera el cambio mínimo
-    detectable.
+    Parameters
+    ----------
+    true_gain_pct : float
+        Mejora real del cliente entre ambas sesiones, en porcentaje.
+    cv : float, default=CV_ENTRE_SESIONES
+        Coeficiente de variación entre sesiones.
+    repeats : int, default=1
+        Mediciones promediadas en cada sesión.
+    baseline : float, default=65.0
+        Activación de partida, en puntos.
+    trials : int, default=20000
+        Simulaciones a ejecutar.
+    seed : int, default=13
+        Semilla del generador.
 
-    Sirve para contestar honestamente "¿en cuántas semanas tiene sentido
-    volver a medir?": si la mejora esperada en 4 semanas está por debajo
-    del umbral, hay que esperar más o medir más veces.
+    Returns
+    -------
+    float
+        Proporción de simulaciones en las que la diferencia observada
+        supera el cambio mínimo detectable, es decir, la probabilidad de
+        detectar la mejora.
+
+    Notes
+    -----
+    Determina cada cuántas semanas tiene sentido repetir la evaluación:
+    si la mejora esperable en cuatro semanas queda por debajo del umbral,
+    medir a las cuatro semanas produce resultados indistinguibles del
+    ruido y conviene espaciar más las lecturas o aumentar `repeats`.
     """
     rng = np.random.default_rng(seed)
     umbral = minimal_detectable_change(cv, repeats, baseline)
@@ -197,12 +314,19 @@ def longitudinal_power(
 
 
 def protocolo_de_repetibilidad() -> str:
-    """
-    Cómo medir la repetibilidad real de ESTE hardware.
+    """Devuelve el protocolo para medir la repetibilidad de este hardware.
 
-    Los números de arriba son de la literatura. Mientras no se midan con
-    los MYOblue y con el protocolo de colocación de esta app, todo lo que
-    calcula este módulo son hipótesis.
+    Returns
+    -------
+    str
+        Texto del protocolo, listo para imprimir.
+
+    Notes
+    -----
+    `CV_DENTRO_SESION` y `CV_ENTRE_SESIONES` proceden de la literatura.
+    Hasta que se midan con los sensores MYOblue y el protocolo de
+    colocación de esta aplicación, los resultados del módulo son
+    hipótesis condicionadas a esos valores.
     """
     return (
         "PROTOCOLO PARA MEDIR LA REPETIBILIDAD REAL (una tarde de trabajo)\n"
@@ -227,6 +351,7 @@ def protocolo_de_repetibilidad() -> str:
 
 
 def _tabla_tamizaje(n_exercises: int, spread: float) -> pd.DataFrame:
+    """Tabula el acierto del tamizaje para varios niveles de repetibilidad."""
     rows = []
     for cv in (0.05, 0.10, 0.15, 0.20, 0.25):
         for repeats in (1, 2, 3):
@@ -247,6 +372,7 @@ def _tabla_tamizaje(n_exercises: int, spread: float) -> pd.DataFrame:
 
 
 def _tabla_cambio_detectable() -> pd.DataFrame:
+    """Tabula el cambio mínimo detectable por repetibilidad y repeticiones."""
     rows = []
     for cv in (0.05, 0.10, 0.15, 0.20, 0.25):
         for repeats in (1, 2, 3):
@@ -264,6 +390,7 @@ def _tabla_cambio_detectable() -> pd.DataFrame:
 
 
 def _tabla_seguimiento() -> pd.DataFrame:
+    """Tabula la potencia del seguimiento para varias mejoras reales."""
     rows = []
     for gain in (5, 10, 15, 20, 30):
         row = {"mejora_real": f"{gain}%"}
@@ -276,6 +403,7 @@ def _tabla_seguimiento() -> pd.DataFrame:
 
 
 def main() -> None:
+    """Ejecuta el análisis completo e imprime sus tres tablas."""
     parser = argparse.ArgumentParser(
         description="Simula el diseño intra-sujeto: cada cliente contra sí mismo."
     )

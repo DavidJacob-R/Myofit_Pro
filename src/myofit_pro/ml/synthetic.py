@@ -1,54 +1,74 @@
-"""
-Generador de datos sintéticos para probar algoritmos antes de tener
-historial real.
+"""Generador de datos sintéticos para la validación de algoritmos.
 
-PARA QUÉ SIRVE Y PARA QUÉ NO
-============================
+Posición en el flujo
+--------------------
+Fuera del flujo de la aplicación. Produce conjuntos de datos con la misma
+forma que los que la aplicación acumula, para poder ejercitar la cadena de
+modelado antes de disponer de historial real. `myofit_pro.ml.benchmark`
+es su consumidor principal.
 
-Sirve para:
-  - Validar que la tubería funciona: que las variables llegan bien, que
-    la validación cruzada está bien armada y que no hay fuga de datos.
-  - Medir cuántos clientes hacen falta antes de que un modelo sea mejor
-    que predecir el promedio (la curva de aprendizaje).
-  - Comparar algoritmos entre sí bajo condiciones idénticas.
-  - Demostrar problemas metodológicos, como la fuga por cliente.
+Alcance
+-------
+Este módulo permite:
 
-NO sirve para:
-  - Decidir si la idea es válida fisiológicamente. Estos datos salen de
-    fórmulas que escribimos nosotros. Si un modelo recupera esas
-    fórmulas, lo único que se demostró es que el modelo sabe ajustar lo
-    que le pusimos, no que la edad y la grasa corporal de verdad
-    expliquen la fatiga en personas reales.
-  - Reportar un R² como si significara algo del mundo real.
+- verificar la integridad de la cadena de modelado: que las variables
+  llegan completas, que la validación cruzada está correctamente
+  construida y que no existe fuga de información entre particiones;
+- estimar la curva de aprendizaje, es decir, cuántos clientes hacen falta
+  para que un modelo supere a la predicción por la media;
+- comparar algoritmos en condiciones idénticas;
+- demostrar problemas metodológicos, como la fuga por cliente.
 
-Dicho de otra forma: esto prueba el código, no la ciencia. La ciencia
-solo se prueba con los clientes reales del gimnasio.
+Este módulo **no** permite:
 
-LAS RELACIONES QUE SE SIMULAN
-=============================
+- validar la hipótesis fisiológica. Los datos proceden de las fórmulas
+  codificadas en `GroundTruth`. Que un modelo las recupere demuestra que
+  el modelo sabe ajustar lo que se le ha inyectado, no que la edad o el
+  porcentaje de grasa expliquen realmente la fatiga en personas;
+- informar de un coeficiente de determinación como si describiera el
+  mundo real.
 
-Están puestas con la dirección que reporta la literatura de sEMG, pero
-las magnitudes son inventadas. Se exportan en `verdad_base.json` para
-poder comprobar si un algoritmo las recupera.
+En resumen, valida el código, no la ciencia. Esta última solo se valida
+con los clientes reales del gimnasio.
 
-  - La grasa subcutánea atenúa la amplitud del sEMG, porque el tejido se
-    interpone entre el músculo y el electrodo.
-  - Más experiencia de entrenamiento se asocia a mejor reclutamiento de
-    unidades motoras, así que más activación relativa al MVC.
-  - La fatiga se mide como la caída de la frecuencia mediana repetición
-    a repetición. Cae más rápido en personas con menos entrenamiento y
-    con más edad.
-  - Cada cliente tiene una afinidad propia por cada ejercicio: el mismo
-    ejercicio no activa igual el mismo músculo en dos personas. Esto es
-    justo lo que los sensores pueden descubrir y una tabla no.
-  - Cada cliente tiene un efecto aleatorio propio, así que sus
-    evaluaciones se parecen entre sí. Esto NO es un detalle: es lo que
-    obliga a validar agrupando por cliente (ver `benchmark.py`).
+Relaciones simuladas
+--------------------
+Las direcciones siguen lo reportado por la literatura de electromiografía
+de superficie; las magnitudes son arbitrarias. Se exportan a
+``verdad_base.json`` para poder comprobar si un algoritmo las recupera.
 
-USO
-===
+- El tejido adiposo subcutáneo atenúa la amplitud sEMG por interponerse
+  entre el músculo y el electrodo.
+- Una mayor experiencia de entrenamiento se asocia a mejor reclutamiento
+  de unidades motoras y, por tanto, a mayor activación relativa.
+- La fatiga se modela como la caída de la frecuencia mediana repetición a
+  repetición, más rápida en personas menos entrenadas y de más edad.
+- Cada cliente tiene una afinidad propia por cada ejercicio: el mismo
+  ejercicio no activa igual el mismo músculo en dos personas. Es
+  precisamente lo que los sensores pueden descubrir y una tabla no.
+- Cada cliente tiene un efecto aleatorio propio, de modo que sus
+  evaluaciones se parecen entre sí más que a las de otros. Esta
+  dependencia es la que obliga a validar agrupando por cliente.
+
+Uso
+---
+::
 
     uv run python -m myofit_pro.ml.synthetic --clientes 60 --salida datos/
+
+See Also
+--------
+myofit_pro.ml.benchmark : Consumidor de estos datos.
+myofit_pro.ml.within_subject : Análisis del diseño alternativo.
+
+References
+----------
+.. [1] Nordander, C. et al. (2003). "Influence of the subcutaneous fat
+       layer, as measured by ultrasound, on the surface EMG amplitude".
+       *European Journal of Applied Physiology*, 89(6), 514-519.
+.. [2] Gelman, A. y Hill, J. (2006). *Data Analysis Using Regression and
+       Multilevel/Hierarchical Models*. Cambridge University Press.
+       Capítulo 12, sobre efectos aleatorios por grupo.
 """
 
 from __future__ import annotations
@@ -70,9 +90,11 @@ from myofit_pro.body_composition import (
     navy_body_fat,
 )
 
-# Catálogo mínimo para que los datos tengan forma de los reales.
+#: Músculos del catálogo reducido. Basta con cuatro para que los datos
+#: tengan la estructura anidada músculo-ejercicio de los reales.
 MUSCLES = ("Bíceps braquial", "Tríceps braquial", "Cuádriceps", "Dorsal ancho")
 
+#: Ejercicios disponibles para cada músculo del catálogo reducido.
 EXERCISES = {
     "Bíceps braquial": ("Curl con barra", "Curl inclinado", "Curl martillo", "Curl predicador"),
     "Tríceps braquial": ("Fondos", "Extensión en polea", "Press francés", "Patada de tríceps"),
@@ -80,54 +102,87 @@ EXERCISES = {
     "Dorsal ancho": ("Dominadas", "Remo con barra", "Jalón al pecho", "Remo en polea"),
 }
 
+#: Niveles de experiencia, en orden creciente. El índice más uno es el
+#: valor numérico que entra en las fórmulas generadoras.
 EXPERIENCE_LEVELS = ("Principiante", "Intermedio", "Avanzado")
 
 
 @dataclass
 class GroundTruth:
-    """
-    Los coeficientes con los que se generaron los datos.
+    """Coeficientes con los que se generan los datos sintéticos.
 
-    Se guardan aparte para poder preguntarle a un algoritmo si los
-    recuperó. Si un modelo no puede recuperar una relación que SÍ está
-    en los datos, tampoco va a encontrar la que esté en los reales.
+    Se serializan a ``verdad_base.json`` para poder contrastar si un
+    algoritmo recupera las relaciones inyectadas. Un modelo incapaz de
+    recuperar una relación presente por construcción tampoco encontrará
+    las que pueda haber en los datos reales.
+
+    Attributes
+    ----------
+    activacion_base : float
+        Activación media de partida, en porcentaje de la contracción
+        voluntaria máxima.
+    activacion_por_grasa : float
+        Variación de la activación por cada 10 puntos de grasa corporal
+        por encima del 20 %. Negativa: el tejido adiposo atenúa la señal.
+    activacion_por_experiencia : float
+        Variación por nivel de experiencia, de 1 a 3.
+    activacion_por_edad : float
+        Variación por cada 10 años por encima de los 30.
+    activacion_ruido : float
+        Desviación típica del error de medición de la activación.
+    fatiga_base : float
+        Pendiente de partida de la frecuencia mediana, en hercios por
+        repetición. Negativa, porque el espectro desciende con la fatiga.
+    fatiga_por_experiencia : float
+        Variación de la pendiente por nivel de experiencia. Positiva: a
+        mayor entrenamiento, caída más lenta.
+    fatiga_por_edad : float
+        Variación por cada 10 años por encima de los 30.
+    fatiga_por_grasa : float
+        Variación por cada 10 puntos de grasa por encima del 20 %.
+    fatiga_ruido : float
+        Desviación típica del error de la pendiente.
+    fatiga_minima, fatiga_maxima : float
+        Límites fisiológicos de la pendiente. El extremo superior es
+        próximo a cero pero negativo: una persona muy entrenada se fatiga
+        poco, pero el espectro no asciende de forma sostenida a lo largo
+        de una serie.
+    efecto_cliente_activacion, efecto_cliente_fatiga : float
+        Desviación típica del efecto aleatorio de cada cliente. Es la
+        fuente de dependencia que obliga a validar por grupo.
+    afinidad_ejercicio : float
+        Desviación típica de la afinidad de un cliente por un ejercicio
+        concreto. Es idiosincrásica: no se deduce de la edad ni del peso,
+        solo midiendo a esa persona, y constituye la razón de ser de los
+        sensores.
+    efecto_ejercicio_poblacional : float
+        Desviación típica del efecto medio de cada ejercicio, común a
+        todos los clientes. A diferencia de la afinidad, sí se aprende
+        del historial de unos clientes y se aplica a un cliente nuevo.
+    notas : list of str
+        Advertencias que acompañan al archivo exportado.
     """
 
-    # Activación media (% del MVC) durante una serie
     activacion_base: float = 62.0
-    activacion_por_grasa: float = -3.2      # por cada 10 puntos de grasa sobre 20
-    activacion_por_experiencia: float = 4.5  # por nivel (1 a 3)
-    activacion_por_edad: float = -1.8        # por cada 10 años sobre 30
+    activacion_por_grasa: float = -3.2
+    activacion_por_experiencia: float = 4.5
+    activacion_por_edad: float = -1.8
     activacion_ruido: float = 4.0
 
-    # Pendiente de la frecuencia mediana, en Hz por repetición.
-    # Negativa: el espectro baja conforme el músculo se fatiga.
     fatiga_base: float = -2.6
-    fatiga_por_experiencia: float = 0.55     # más entrenado, cae más lento
-    fatiga_por_edad: float = -0.30           # por cada 10 años sobre 30
-    fatiga_por_grasa: float = -0.18          # por cada 10 puntos sobre 20
+    fatiga_por_experiencia: float = 0.55
+    fatiga_por_edad: float = -0.30
+    fatiga_por_grasa: float = -0.18
     fatiga_ruido: float = 0.35
 
-    # Límites fisiológicos de la pendiente. El extremo superior es casi
-    # cero y no positivo: alguien muy entrenado se fatiga poco, pero el
-    # espectro no sube conforme hace repeticiones.
     fatiga_minima: float = -6.0
     fatiga_maxima: float = -0.15
 
-    # Dispersión del efecto aleatorio de cada cliente. Es lo que hace
-    # que dos evaluaciones del mismo cliente se parezcan más entre sí
-    # que a las de otro cliente.
     efecto_cliente_activacion: float = 6.0
     efecto_cliente_fatiga: float = 0.5
 
-    # Cuánto varía la afinidad de un cliente por un ejercicio concreto.
-    # Es idiosincrásico: no se puede deducir de la edad ni del peso, solo
-    # midiendo a esa persona. Es la razón de existir de los sensores.
     afinidad_ejercicio: float = 7.0
 
-    # Efecto poblacional del ejercicio: hay ejercicios que activan más
-    # que otros en promedio, para todos. Esto SÍ se aprende de los datos
-    # de los demás clientes y sirve para un cliente nuevo.
     efecto_ejercicio_poblacional: float = 5.5
 
     notas: list[str] = field(
@@ -139,19 +194,39 @@ class GroundTruth:
 
 
 def _experience_number(level: str) -> int:
+    """Convierte un nivel de experiencia en su valor numérico, de 1 a 3."""
     return EXPERIENCE_LEVELS.index(level) + 1
 
 
 def generate_clients(n: int, rng: np.random.Generator) -> pd.DataFrame:
-    """
-    Fichas de cliente con la misma forma que las que captura la app.
+    """Genera fichas de cliente con la estructura que captura la aplicación.
 
-    Los datos físicos se generan correlacionados como en la población
-    real: la estatura depende del sexo, el peso de la estatura, y la
-    grasa corporal del sexo y la edad. Generarlos independientes daría
-    combinaciones imposibles (mujeres de 190 cm y 45 kg) y haría que
-    cualquier modelo se viera mejor de lo que es, porque tendría
-    variables sin correlación entre sí, que es el caso fácil.
+    Parameters
+    ----------
+    n : int
+        Clientes a generar.
+    rng : numpy.random.Generator
+        Generador de números aleatorios.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Una fila por cliente, con las columnas de la ficha más
+        ``experience_num``, la codificación numérica del nivel.
+
+    Notes
+    -----
+    Las variables antropométricas se generan correlacionadas, como en la
+    población real: la estatura depende del sexo, el peso de la estatura
+    a través del índice de masa corporal, y la grasa corporal del sexo y
+    de las circunferencias. Generarlas de forma independiente produciría
+    combinaciones imposibles y, lo que es peor, dejaría a los modelos
+    con predictores no correlacionados entre sí, que es el caso
+    favorable y no el real.
+
+    El porcentaje de grasa se calcula por el método de circunferencias y
+    se recurre a Deurenberg solo si aquel no es aplicable, replicando la
+    jerarquía que sigue la aplicación.
     """
     rows = []
     for client_id in range(1, n + 1):
@@ -170,10 +245,10 @@ def generate_clients(n: int, rng: np.random.Generator) -> pd.DataFrame:
         base_bmi = float(np.clip(base_bmi, 17.0, 40.0))
         weight = round(base_bmi * (height / 100.0) ** 2, 1)
 
-        # Cintura correlacionada con el IMC, que es lo que pasa en la
-        # realidad, más una variación propia: dos personas con el mismo
-        # IMC pueden tener cinturas distintas, y justo esa diferencia es
-        # la que el método de circunferencias detecta.
+        # La cintura se correlaciona con el IMC más una variación propia:
+        # dos personas con el mismo IMC pueden tener cinturas distintas, y
+        # esa diferencia es justamente lo que detecta el método de
+        # circunferencias.
         waist = float(
             np.clip(
                 (58 if sex == SEX_FEMALE else 62) + 1.55 * base_bmi + rng.normal(0, 4.5),
@@ -190,8 +265,8 @@ def generate_clients(n: int, rng: np.random.Generator) -> pd.DataFrame:
         if body_fat is None:
             body_fat = deurenberg_body_fat(bmi(height, weight), age, sex)
 
-        # La experiencia no es uniforme: hay más principiantes que
-        # avanzados en la clientela de cualquier gimnasio.
+        # Distribución de experiencia sesgada hacia el principiante, como
+        # en la clientela de un gimnasio.
         experience = str(rng.choice(EXPERIENCE_LEVELS, p=[0.45, 0.38, 0.17]))
         days = int(rng.choice([3, 4, 5], p=[0.45, 0.35, 0.20]))
         goal = str(rng.choice(PRIMARY_GOAL_NAMES, p=[0.25, 0.45, 0.30]))
@@ -225,21 +300,42 @@ def generate_evaluations(
     truth: GroundTruth,
     evals_per_client: tuple[int, int] = (2, 9),
 ) -> pd.DataFrame:
-    """
-    Evaluaciones sEMG por cliente, con la estructura que dejaría la app.
+    """Genera las evaluaciones sEMG de un conjunto de clientes.
 
-    El número de evaluaciones por cliente es desigual a propósito: en la
-    realidad unos clientes se evalúan una vez y otros doce. Un conjunto
-    balanceado escondería el problema de que los clientes con más
-    historial dominan el entrenamiento.
+    Parameters
+    ----------
+    clients : pandas.DataFrame
+        Fichas de cliente, tal como las devuelve `generate_clients`.
+    rng : numpy.random.Generator
+        Generador de números aleatorios.
+    truth : GroundTruth
+        Coeficientes generadores.
+    evals_per_client : tuple of int, default=(2, 9)
+        Rango cerrado de evaluaciones por cliente.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Una fila por evaluación, con los identificadores de sesión y
+        cliente, el músculo y ejercicio medidos, y las dos variables
+        objetivo: ``fatigue_slope_hz_per_rep`` y
+        ``mean_activation_pct``.
+
+    Notes
+    -----
+    El número de evaluaciones por cliente es deliberadamente desigual: en
+    la práctica unos clientes se evalúan una vez y otros doce. Un
+    conjunto equilibrado ocultaría que los clientes con más historial
+    dominan el entrenamiento del modelo.
+
+    El efecto poblacional de cada ejercicio se sortea una sola vez, fuera
+    del bucle de clientes, lo que lo hace común a todos y por tanto
+    aprendible del historial ajeno. La afinidad, en cambio, se sortea
+    dentro del bucle y solo es observable midiendo a esa persona.
     """
     rows = []
     session_id = 0
 
-    # Efecto poblacional de cada ejercicio: el mismo para todos los
-    # clientes, así que un modelo lo puede aprender del historial de
-    # unos y aplicarlo a un cliente nuevo. Se sortea una sola vez, fuera
-    # del bucle de clientes, que es justo lo que lo hace poblacional.
     exercise_effect = {
         exercise: rng.normal(0, truth.efecto_ejercicio_poblacional)
         for muscle in MUSCLES
@@ -247,13 +343,11 @@ def generate_evaluations(
     }
 
     for _, client in clients.iterrows():
-        # Efecto aleatorio del cliente: constante en todas SUS
-        # evaluaciones. Es la razón por la que los datos no son
-        # independientes y por la que hay que validar por grupo.
+        # Constante en todas las evaluaciones de este cliente: es la
+        # fuente de dependencia que obliga a validar por grupo.
         client_offset_act = rng.normal(0, truth.efecto_cliente_activacion)
         client_offset_fat = rng.normal(0, truth.efecto_cliente_fatiga)
 
-        # Afinidad propia por cada ejercicio
         affinity = {
             exercise: rng.normal(0, truth.afinidad_ejercicio)
             for muscle in MUSCLES
@@ -276,17 +370,14 @@ def generate_evaluations(
                 + truth.activacion_por_experiencia * experience
                 + truth.activacion_por_edad * age_term
                 + client_offset_act
-                + exercise_effect[exercise]   # aprendible de otros clientes
-                + affinity[exercise]          # solo medible en este cliente
+                + exercise_effect[exercise]
+                + affinity[exercise]
                 + rng.normal(0, truth.activacion_ruido)
             )
             activation = float(np.clip(activation, 15, 99))
 
-            # La pendiente se acota a valores posibles. Un cliente muy
-            # entrenado y joven podía salirse a valores positivos, que
-            # significarían un músculo que se desfatiga solo conforme
-            # hace repeticiones. El espectro del sEMG baja con la fatiga
-            # o se queda plano, nunca sube de forma sostenida.
+            # Se acota para descartar pendientes positivas, que
+            # implicarían un espectro ascendiendo a lo largo de la serie.
             fatigue_slope = float(
                 np.clip(
                     truth.fatiga_base
@@ -300,10 +391,10 @@ def generate_evaluations(
                 )
             )
 
-            # El MVC en microvolts NO es un dato limpio: depende mucho de
-            # la colocación del electrodo. En hardware real medimos 978 y
-            # 1691 µV para el mismo gesto en dos sensores, un factor de
-            # 1.7, así que aquí se le mete esa variabilidad.
+            # La contracción máxima en microvoltios depende fuertemente de
+            # la colocación del electrodo: dos sensores sobre el mismo
+            # músculo llegaron a diferir en un factor de 1,7 con este
+            # hardware, y esa variabilidad se reproduce aquí.
             mvc_uv = float(
                 np.clip(
                     rng.normal(620, 180) * (1.0 - 0.12 * fat_term),
@@ -326,9 +417,7 @@ def generate_evaluations(
                     "mvc_channel_a_uv": round(mvc_uv * placement_noise, 1),
                     "mvc_channel_b_uv": round(mvc_uv * (2 - placement_noise), 1),
                     "median_freq_start_hz": round(median_freq_start, 1),
-                    # Objetivo 1: qué tan rápido se fatiga esta persona
                     "fatigue_slope_hz_per_rep": round(fatigue_slope, 3),
-                    # Objetivo 2: cuánto activa este ejercicio en esta persona
                     "mean_activation_pct": round(activation, 1),
                     "peak_activation_pct": round(
                         float(np.clip(activation + abs(rng.normal(9, 4)), 20, 100)), 1
@@ -342,7 +431,24 @@ def generate_evaluations(
 def build_dataset(
     n_clients: int = 60, seed: int = 7
 ) -> tuple[pd.DataFrame, pd.DataFrame, GroundTruth]:
-    """Genera clientes y evaluaciones con una semilla reproducible."""
+    """Genera el conjunto de datos completo.
+
+    Parameters
+    ----------
+    n_clients : int, default=60
+        Clientes a generar.
+    seed : int, default=7
+        Semilla del generador, para reproducibilidad.
+
+    Returns
+    -------
+    clients : pandas.DataFrame
+        Fichas de cliente.
+    evaluations : pandas.DataFrame
+        Evaluaciones sEMG.
+    truth : GroundTruth
+        Coeficientes empleados en la generación.
+    """
     rng = np.random.default_rng(seed)
     truth = GroundTruth()
     clients = generate_clients(n_clients, rng)
@@ -351,6 +457,7 @@ def build_dataset(
 
 
 def main() -> None:
+    """Genera el conjunto de datos y lo escribe en disco como CSV y JSON."""
     parser = argparse.ArgumentParser(
         description="Genera datos sintéticos para probar algoritmos de predicción."
     )
@@ -368,8 +475,8 @@ def main() -> None:
     clients.to_csv(args.salida / "clientes.csv", index=False)
     evaluations.to_csv(args.salida / "evaluaciones.csv", index=False)
 
-    # La tabla unida es la que se le da a un modelo: una fila por
-    # evaluación, con los datos del cliente repetidos.
+    # Tabla unida: una fila por evaluación con los datos del cliente
+    # repetidos. Es la forma en que se entrega a un modelo.
     merged = evaluations.merge(clients, on="client_id", how="left")
     merged.to_csv(args.salida / "dataset.csv", index=False)
 

@@ -1,22 +1,35 @@
-"""
-Servicio principal para sensores MYOblue v1.2 de elemyo.
+"""Servicio de captura de los sensores MYOblue v1.2.
 
-Los MYOblue v1.2 se comunican por RF 2.4GHz propietario a un dongle
-USB receptor, que Windows/Linux/macOS expone como un puerto COM/tty
-virtual. Por eso este servicio usa `pyserial`, NO `bleak` — el
-protocolo RF del sensor al dongle no es Bluetooth estándar y no está
-documentado públicamente por elemyo, así que no hay forma de hablarle
-directo por BLE sin el dongle.
+Posición en el flujo
+--------------------
+Punto de entrada del subsistema de adquisición y única clase con la que
+habla la capa gráfica. Lee del puerto serie en un hilo propio, delega la
+decodificación en `myofit_pro.sensors.protocol`, el procesado en
+`myofit_pro.sensors.channel`, y emite el resultado como señales de Qt.
 
-`bleak` se deja declarado como dependencia del proyecto para el día
-que se incorpore un sensor que sí hable BLE nativo (hay líneas de
-producto de otros fabricantes que sí lo hacen) — el método
-`connect_ble()` queda como stub documentado para ese caso futuro,
-sin inventar UUIDs de servicio que no conocemos.
+Transporte
+----------
+Los sensores se comunican con un receptor USB por radiofrecuencia
+propietaria en 2,4 GHz. El sistema operativo expone ese receptor como un
+puerto serie virtual, motivo por el que se emplea `pyserial` y no una
+biblioteca de Bluetooth: el enlace entre sensor y receptor no es
+Bluetooth estándar ni está documentado públicamente.
 
-Este servicio se implementa como QObject con señales de PySide6, así
-que emitir desde el hilo de lectura en background y consumir desde la
-UI en el hilo principal es automático y seguro (Qt encola la señal).
+Concurrencia
+------------
+La lectura del puerto ocurre en un hilo en segundo plano, mientras que la
+interfaz vive en el hilo principal. El servicio hereda de
+`PySide6.QtCore.QObject` y publica sus resultados mediante señales: Qt
+encola automáticamente las emisiones que cruzan de un hilo a otro, de
+modo que la interfaz nunca toca el estado del hilo lector.
+
+Reconstrucción del tiempo
+-------------------------
+Cada paquete trae un contador de mensaje de 24 bits. El servicio guarda
+el primero de cada sensor y calcula el resto de instantes como
+desplazamientos relativos a él, lo que sitúa el origen de tiempos en el
+inicio de la captura con independencia de cuánto llevara encendido el
+sensor.
 """
 
 from __future__ import annotations
@@ -25,7 +38,6 @@ import threading
 import time
 from enum import Enum, auto
 
-import numpy as np
 import serial
 import serial.tools.list_ports
 from PySide6.QtCore import QObject, Signal
@@ -35,6 +47,22 @@ from myofit_pro.sensors.protocol import DEFAULT_BAUD_RATE, MAX_SENSORS, Packet, 
 
 
 class ConnectionState(Enum):
+    """Estado del enlace con el receptor USB.
+
+    Attributes
+    ----------
+    DISCONNECTED : enum.auto
+        Sin puerto abierto.
+    CONNECTING : enum.auto
+        Abriendo el puerto.
+    CONNECTED : enum.auto
+        Puerto abierto y disponible para capturar.
+    ERROR : enum.auto
+        El puerto falló al abrirse o durante la lectura. El mensaje que
+        acompaña a `MyoBlueService.connection_state_changed` describe la
+        causa.
+    """
+
     DISCONNECTED = auto()
     CONNECTING = auto()
     CONNECTED = auto()
@@ -42,38 +70,62 @@ class ConnectionState(Enum):
 
 
 class MyoBlueService(QObject):
+    """Servicio de captura de los sensores MYOblue.
+
+    Gestiona el puerto serie, el hilo de lectura y un
+    `myofit_pro.sensors.channel.MyoBlueChannel` por sensor.
+
+    Parameters
+    ----------
+    sensors_in_use : int, default=2
+        Sensores cuyos paquetes se procesan. Los de índice superior se
+        descartan, aunque el receptor los reciba.
+    parent : PySide6.QtCore.QObject, optional
+        Padre en la jerarquía de Qt.
+
+    Attributes
+    ----------
+    samples_received : PySide6.QtCore.Signal
+        Emite un `myofit_pro.sensors.channel.ProcessedBlock` por cada
+        paquete procesado.
+    battery_updated : PySide6.QtCore.Signal
+        Emite ``(índice de sensor, voltios)`` cuando la tensión cambia
+        de forma apreciable.
+    contraction_detected : PySide6.QtCore.Signal
+        Emite ``(índice de sensor, total acumulado, segundos)`` al
+        detectarse una contracción.
+    connection_state_changed : PySide6.QtCore.Signal
+        Emite ``(ConnectionState, mensaje)`` en cada transición.
+    channels : list of MyoBlueChannel
+        Un canal por sensor posible, con sus filtros independientes.
+    state : ConnectionState
+        Estado actual del enlace.
+    current_port : str or None
+        Puerto abierto, o `None` si no hay ninguno.
+
+    Examples
+    --------
+    >>> service = MyoBlueService()                      # doctest: +SKIP
+    >>> service.samples_received.connect(on_samples)    # doctest: +SKIP
+    >>> service.connect_serial(MyoBlueService.available_ports()[0])
+    ...                                                 # doctest: +SKIP
+    >>> service.start()                                 # doctest: +SKIP
+    >>> service.stop()                                  # doctest: +SKIP
+    >>> service.disconnect_serial()                     # doctest: +SKIP
     """
-    Punto de entrada único para hablar con el receptor USB del MYOblue.
 
-    Uso típico desde la GUI:
-
-        service = MyoBlueService()
-        service.samples_received.connect(on_samples)
-        service.battery_updated.connect(on_battery)
-        service.contraction_detected.connect(on_contraction)
-        service.connection_state_changed.connect(on_state)
-
-        ports = MyoBlueService.available_ports()
-        service.connect_serial(ports[0])
-        service.start()
-        ...
-        service.stop()
-        service.disconnect_serial()
-    """
-
-    # ── Señales Qt (equivalentes a los `event` de C#) ──────────────
-    samples_received = Signal(object)            # ProcessedBlock
-    battery_updated = Signal(int, float)          # sensor_index, volts
-    contraction_detected = Signal(int, int, float)  # sensor_index, total_count, time_sec
-    connection_state_changed = Signal(object, str)  # ConnectionState, message
+    samples_received = Signal(object)
+    battery_updated = Signal(int, float)
+    contraction_detected = Signal(int, int, float)
+    connection_state_changed = Signal(object, str)
 
     def __init__(self, sensors_in_use: int = 2, parent: QObject | None = None):
         super().__init__(parent)
 
         self.sensors_in_use = sensors_in_use
         self.sample_rate_hz = 1000.0
-        self.bandpass_low = 2.0    # config.ini: BandPassFilterLF = 2
-        self.bandpass_high = 499.0  # config.ini: BandPassFilterHF = 499
+        self.bandpass_low = 2.0
+        self.bandpass_high = 499.0
         self.notch_hz = 60.0
         self.rms_interval_sec = 0.5
         self.envelope_alpha = 0.95
@@ -102,11 +154,33 @@ class MyoBlueService(QObject):
 
     @staticmethod
     def available_ports() -> list[str]:
+        """Enumera los puertos serie del sistema.
+
+        Returns
+        -------
+        list of str
+            Nombres de dispositivo. El receptor USB aparece entre ellos
+            cuando está conectado; el servicio no lo identifica por sí
+            mismo, así que es el usuario quien lo elige.
+        """
         return [p.device for p in serial.tools.list_ports.comports()]
 
     # ── Conexión ─────────────────────────────────────────────────────
 
     def connect_serial(self, port_name: str) -> bool:
+        """Abre el puerto del receptor USB.
+
+        Parameters
+        ----------
+        port_name : str
+            Nombre de dispositivo, tomado de `available_ports`.
+
+        Returns
+        -------
+        bool
+            Cierto si el puerto quedó abierto. Ante un fallo el estado
+            pasa a `ConnectionState.ERROR` con el mensaje del sistema.
+        """
         if self.state == ConnectionState.CONNECTED:
             return True
         self._change_state(ConnectionState.CONNECTING, f"Abriendo {port_name}")
@@ -125,19 +199,8 @@ class MyoBlueService(QObject):
             self._change_state(ConnectionState.ERROR, str(ex))
             return False
 
-    def connect_ble(self, device_address: str) -> None:
-        """
-        Stub para sensores futuros que hablen BLE nativo (no aplica a
-        MYOblue v1.2, que usa dongle USB). No implementado — requiere
-        los UUIDs de servicio/característica reales del fabricante,
-        que hay que obtener con un sniffer BLE o la hoja de datos.
-        """
-        raise NotImplementedError(
-            "El MYOblue v1.2 usa dongle USB, no BLE directo. "
-            "Este método queda listo para un sensor BLE futuro."
-        )
-
     def disconnect_serial(self) -> None:
+        """Detiene la captura y cierra el puerto."""
         self.stop()
         if self._serial is not None:
             try:
@@ -151,6 +214,12 @@ class MyoBlueService(QObject):
     # ── Ciclo de lectura ─────────────────────────────────────────────
 
     def start(self) -> None:
+        """Arranca el hilo de lectura.
+
+        No hace nada si el puerto no está abierto o si el hilo ya está en
+        marcha. Reinicia el estado temporal y los filtros de todos los
+        canales, de modo que cada captura empiece en cero.
+        """
         if self._serial is None or not self._serial.is_open:
             return
         if self._reader_thread is not None and self._reader_thread.is_alive():
@@ -162,26 +231,36 @@ class MyoBlueService(QObject):
         self._reader_thread.start()
 
     def stop(self) -> None:
+        """Detiene el hilo de lectura y espera a que termine."""
         self._stop_event.set()
         if self._reader_thread is not None:
             self._reader_thread.join(timeout=1.0)
         self._reader_thread = None
 
     def reset_counters(self) -> None:
+        """Pone a cero el contador de contracciones de todos los canales."""
         for ch in self.channels:
             ch.reset_counter()
 
     @property
     def is_connected(self) -> bool:
+        """Si hay un puerto abierto y disponible."""
         return self.state == ConnectionState.CONNECTED
 
     def close(self) -> None:
-        """Liberar todo (equivalente a Dispose de C#)."""
+        """Libera todos los recursos del servicio."""
         self.disconnect_serial()
 
     # ── Internos ──────────────────────────────────────────────────────
 
     def _reader_loop(self) -> None:
+        """Lee del puerto y procesa paquetes hasta recibir la señal de parada.
+
+        Se ejecuta en el hilo en segundo plano. Conserva entre
+        iteraciones el residuo que devuelve
+        `myofit_pro.sensors.protocol.parse_available`, ya que un paquete
+        puede quedar partido entre dos lecturas.
+        """
         assert self._serial is not None
         while not self._stop_event.is_set() and self._serial.is_open:
             try:
@@ -207,6 +286,14 @@ class MyoBlueService(QObject):
                 break
 
     def _process_packet(self, pkt: Packet) -> None:
+        """Procesa un paquete y emite las señales que correspondan.
+
+        Parameters
+        ----------
+        pkt : myofit_pro.sensors.protocol.Packet
+            Paquete decodificado. Se descarta si su sensor queda fuera de
+            `sensors_in_use`.
+        """
         s = pkt.sensor_index
         if s >= self.sensors_in_use:
             return
@@ -242,6 +329,7 @@ class MyoBlueService(QObject):
             )
 
     def _reset_timing_state(self) -> None:
+        """Reinicia el origen de tiempos, los filtros y el residuo."""
         for i in range(MAX_SENSORS):
             self._first_packet_seen[i] = False
             self._first_msg_num[i] = 0
@@ -250,5 +338,6 @@ class MyoBlueService(QObject):
         self._residue = b""
 
     def _change_state(self, state: ConnectionState, message: str = "") -> None:
+        """Actualiza el estado y lo notifica por señal."""
         self.state = state
         self.connection_state_changed.emit(state, message)

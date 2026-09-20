@@ -40,6 +40,7 @@ from myofit_pro.gui.theme import (
     Avatar,
     BackButton,
     Card,
+    CollapsibleGroup,
     DataChip,
     EmptyState,
     IconBadge,
@@ -48,6 +49,7 @@ from myofit_pro.gui.theme import (
     ScoreRing,
     StatCard,
     clear_layout,
+    format_date_es,
     goal_color,
     score_color,
 )
@@ -58,6 +60,7 @@ class ClientProfileView(QWidget):
     start_evaluation_requested = Signal(object)   # Client
     view_report_requested = Signal(int)           # session_id
     edit_requested = Signal(object)               # Client
+    view_progress_requested = Signal(object)      # Client
     data_changed = Signal()                       # se borró algo, refrescar el resto
 
     def __init__(self, state: AppState, parent: QWidget | None = None):
@@ -96,7 +99,6 @@ class ClientProfileView(QWidget):
         layout.addWidget(self._build_hero())
         layout.addLayout(self._build_stats_row())
         layout.addWidget(self._build_history_card(), stretch=1)
-        layout.addWidget(self._build_mvc_card())
 
         scroll.setWidget(host)
         outer.addWidget(scroll)
@@ -147,6 +149,11 @@ class ClientProfileView(QWidget):
         new_eval_btn.clicked.connect(self._on_new_evaluation_clicked)
         actions.addWidget(new_eval_btn)
 
+        self.progress_btn = PushButton("Ver progreso")
+        self.progress_btn.setIcon(FIF.MARKET)
+        self.progress_btn.clicked.connect(self._on_progress_clicked)
+        actions.addWidget(self.progress_btn)
+
         edit_btn = PushButton("Editar ficha")
         edit_btn.setIcon(FIF.EDIT)
         edit_btn.clicked.connect(self._on_edit_clicked)
@@ -178,7 +185,7 @@ class ClientProfileView(QWidget):
         card = Card()
         card.add_title(
             "Historial de evaluaciones",
-            "Clic para abrir el reporte  ·  la papelera elimina la evaluación",
+            "Agrupado por día. Clic en una fecha para ver las evaluaciones de ese día",
         )
 
         self.history_list = QVBoxLayout()
@@ -189,18 +196,6 @@ class ClientProfileView(QWidget):
             "", "Este cliente todavía no tiene evaluaciones registradas."
         )
         card.body.addWidget(self.history_empty)
-        return card
-
-    def _build_mvc_card(self) -> Card:
-        card = Card()
-        card.add_title("Calibraciones MVC", "Referencia por músculo, la más reciente de cada uno")
-
-        self.mvc_list = QVBoxLayout()
-        self.mvc_list.setSpacing(8)
-        card.body.addLayout(self.mvc_list)
-
-        self.mvc_empty = EmptyState("", "Sin calibraciones registradas todavía.")
-        card.body.addWidget(self.mvc_empty)
         return card
 
     # ── Carga de datos ───────────────────────────────────────────────
@@ -224,9 +219,19 @@ class ClientProfileView(QWidget):
         sessions = self.state.evaluation_repo.list_for_client(client.id)
         self._sessions = sessions
 
+        # Sin evaluaciones completadas no hay nada que comparar, y mandar
+        # al entrenador a una pantalla vacía es peor que no dejarlo
+        # entrar.
+        completadas = [
+            s for s in sessions if s.status == EvaluationStatus.COMPLETED.value
+        ]
+        self.progress_btn.setEnabled(bool(completadas))
+        self.progress_btn.setToolTip(
+            "" if completadas else "Necesita al menos una evaluación completada."
+        )
+
         self._refresh_stats(sessions)
         self._refresh_history(sessions)
-        self._refresh_mvc(sessions)
 
     def reload(self) -> None:
         """Vuelve a leer el cliente de la base y redibuja todo."""
@@ -268,38 +273,71 @@ class ClientProfileView(QWidget):
         self.score_ring.set_value(scored[0].overall_score if scored else None)
 
     def _refresh_history(self, sessions) -> None:
+        """
+        El historial agrupado por día y plegado.
+
+        Un cliente con meses de trabajo acumula decenas de evaluaciones,
+        y verlas todas desplegadas obliga a recorrer la ficha entera para
+        llegar a lo de abajo. Agrupadas por fecha se lee de un vistazo
+        cuándo se trabajó, y se abre solo el día que interesa.
+
+        El día más reciente viene abierto: es el que casi siempre se
+        quiere ver.
+        """
         clear_layout(self.history_list)
         self.history_empty.setVisible(len(sessions) == 0)
 
+        por_dia: dict[dt.date, list] = {}
         for session in sessions:
-            muscle = self.state.muscle_repo.get(session.muscle_id)
-            status_pill = self._status_pill(session.status)
+            por_dia.setdefault(session.started_at.date(), []).append(session)
 
-            row = ListRow(
-                title=muscle.name if muscle else "—",
-                subtitle=(
-                    f"{session.started_at.strftime('%d/%m/%Y · %H:%M')}   ·   {session.goal}"
-                ),
-                value=(
-                    f"{session.overall_score:.0f}%"
-                    if session.overall_score is not None
-                    else ""
-                ),
-                value_caption="score" if session.overall_score is not None else "",
-                value_color=score_color(session.overall_score),
-                leading=IconBadge(
-                    FIF.CALORIES, Avatar.color_for(muscle.name if muscle else "?"), size=40
-                ),
-                pill=status_pill,
-                clickable=session.status == EvaluationStatus.COMPLETED.value,
+        for posicion, fecha in enumerate(sorted(por_dia, reverse=True)):
+            del_dia = por_dia[fecha]
+            musculos = []
+            for session in del_dia:
+                muscle = self.state.muscle_repo.get(session.muscle_id)
+                nombre = muscle.name if muscle else "—"
+                if nombre not in musculos:
+                    musculos.append(nombre)
+
+            grupo = CollapsibleGroup(
+                title=format_date_es(dt.datetime.combine(fecha, dt.time())),
+                caption="  ·  ".join(musculos),
+                expanded=posicion == 0,
+                accent=ACCENT_TEAL,
             )
-            if session.status == EvaluationStatus.COMPLETED.value:
-                row.clicked.connect(
-                    lambda sid=session.id: self.view_report_requested.emit(sid)
+            grupo.add_trailing(
+                Pill(
+                    "1 evaluación" if len(del_dia) == 1 else f"{len(del_dia)} evaluaciones",
+                    ACCENT_TEAL,
                 )
+            )
+            for session in del_dia:
+                grupo.body.addWidget(self._session_row(session))
+            self.history_list.addWidget(grupo)
 
-            row.add_trailing(self._delete_button(session))
-            self.history_list.addWidget(row)
+    def _session_row(self, session) -> ListRow:
+        muscle = self.state.muscle_repo.get(session.muscle_id)
+        row = ListRow(
+            title=muscle.name if muscle else "—",
+            subtitle=f"{session.started_at.strftime('%H:%M')}   ·   {session.goal}",
+            value=(
+                f"{session.overall_score:.0f}%"
+                if session.overall_score is not None
+                else ""
+            ),
+            value_caption="score" if session.overall_score is not None else "",
+            value_color=score_color(session.overall_score),
+            leading=IconBadge(
+                FIF.CALORIES, Avatar.color_for(muscle.name if muscle else "?"), size=36
+            ),
+            pill=self._status_pill(session.status),
+            clickable=session.status == EvaluationStatus.COMPLETED.value,
+        )
+        if session.status == EvaluationStatus.COMPLETED.value:
+            row.clicked.connect(lambda sid=session.id: self.view_report_requested.emit(sid))
+        row.add_trailing(self._delete_button(session))
+        return row
 
     def _delete_button(self, session) -> ToolButton:
         button = ToolButton(FIF.DELETE)
@@ -332,40 +370,6 @@ class ClientProfileView(QWidget):
         self.reload()
         self.data_changed.emit()
 
-    def _refresh_mvc(self, sessions) -> None:
-        clear_layout(self.mvc_list)
-
-        seen_muscles: set[int] = set()
-        rows = 0
-        for session in sessions:
-            if session.muscle_id in seen_muscles or session.mvc_calibration_id is None:
-                continue
-            seen_muscles.add(session.muscle_id)
-
-            calib = self.state.calibration_repo.get(session.mvc_calibration_id)
-            muscle = self.state.muscle_repo.get(session.muscle_id)
-            if calib is None or muscle is None:
-                continue
-
-            self.mvc_list.addWidget(
-                ListRow(
-                    title=muscle.name,
-                    subtitle=(
-                        f"Sensor A {calib.mvc_channel_a_uv:.0f} µV   ·   "
-                        f"Sensor B {calib.mvc_channel_b_uv:.0f} µV   ·   "
-                        f"{calib.recorded_at.strftime('%d/%m/%Y')}"
-                    ),
-                    value=f"{calib.mvc_value_uv:.0f}",
-                    value_caption="µV MVC",
-                    value_color=ACCENT_TEAL,
-                    leading=IconBadge(FIF.SPEED_HIGH, ACCENT_TEAL, size=40),
-                    clickable=False,
-                )
-            )
-            rows += 1
-
-        self.mvc_empty.setVisible(rows == 0)
-
     # ── Utilidades ───────────────────────────────────────────────────
 
     @staticmethod
@@ -397,3 +401,7 @@ class ClientProfileView(QWidget):
     def _on_edit_clicked(self) -> None:
         if self._client is not None:
             self.edit_requested.emit(self._client)
+
+    def _on_progress_clicked(self) -> None:
+        if self._client is not None:
+            self.view_progress_requested.emit(self._client)

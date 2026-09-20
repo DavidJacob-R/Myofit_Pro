@@ -25,9 +25,7 @@ dist/
 datos/
 datos_sinteticos/
 
-# Base de datos local del usuario. Vive en ~/.myofit_pro/, pero si
-# alguien la copia al proyecto para depurar, que no se suba: trae
-# datos reales de clientes.
+# Base de datos local del usuario.
 *.db
 *.duckdb
 *.duckdb.wal

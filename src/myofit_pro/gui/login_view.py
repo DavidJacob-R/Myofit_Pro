@@ -1,4 +1,16 @@
-"""Equivalente a LoginView.xaml / LoginView.xaml.cs."""
+"""Pantalla de identificación del entrenador.
+
+Posición en el flujo
+--------------------
+Primera pantalla de la aplicación, dentro de
+`myofit_pro.main.AuthWindow`. Autenticado el entrenador, la ventana de
+acceso da paso a `myofit_pro.gui.main_window.MainWindow`.
+
+Es una de las dos únicas vistas que instancia un repositorio
+directamente, junto con `myofit_pro.gui.register_view`: el estado
+compartido no existe todavía, porque se construye a partir del
+entrenador que esta pantalla identifica.
+"""
 
 from __future__ import annotations
 
@@ -13,9 +25,17 @@ from myofit_pro.gui.theme import ACCENT_VIOLET, BG_MAIN, Card, IconBadge, PageHe
 
 
 class LoginView(QWidget):
-    """Emite `login_success` con el Trainer autenticado."""
+    """Formulario de identificación.
 
-    login_success = Signal(object)          # Trainer
+    Attributes
+    ----------
+    login_success : PySide6.QtCore.Signal
+        Emite el `myofit_pro.database.models.Trainer` autenticado.
+    go_to_register : PySide6.QtCore.Signal
+        Solicita mostrar el formulario de alta.
+    """
+
+    login_success = Signal(object)
     go_to_register = Signal()
 
     def __init__(self, parent: QWidget | None = None):
